@@ -40,19 +40,20 @@ STATIC UINT32 gAicMaxIrqs, gAicMaskSetOffset, gAicMaskClearOffset;
 // need to find the function that does the registration and call it directly.
 //
 
+
 NTSTATUS AppleInterruptControllerInterruptMaskSet(UINT32 IrqNum) {
 	UINT32 CpuDieOffset;
 	switch (gAicVersion) {
-		case APPLE_INTERRUPT_CONTROLLER_V1:
-			WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
-			break;
-		case APPLE_INTERRUPT_CONTROLLER_V2:
-		case APPLE_INTERRUPT_CONTROLLER_V3:
-			//
-			// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
-			//
-			WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + CpuDieOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
-			break;
+	case APPLE_INTERRUPT_CONTROLLER_V1:
+		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
+		break;
+	case APPLE_INTERRUPT_CONTROLLER_V2:
+	case APPLE_INTERRUPT_CONTROLLER_V3:
+		//
+		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
+		//
+		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + CpuDieOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
+		break;
 	}
 	return NT_SUCCESS;
 }
@@ -73,6 +74,44 @@ NTSTATUS AppleInterruptControllerSetInterruptMaskClear(UINT32 IrqNum) {
 	}
 	return NT_SUCCESS;
 }
+
+
+//
+// The AIC IRQ controller function table.
+// NOTE: I am pretty sure not all of these functions need to exist, and we probably won't need all of them, and if that's the case, the function itself can be replaced with a NULL, 
+// but these are all the defined functions a registered interrupt controller can have with the HAL and so this is the initial blueprint for moving forward.
+// Anything extra can absolutely be included, but this is the bare minimum "getting started" blueprint.
+//
+INTERRUPT_FUNCTION_TABLE gAicFunctionTable {
+	AppleInterruptControllerInitializeLocalUnit,
+	AppleInterruptControllerInitializeIoUnit,
+	AppleInterruptControllerSetPriority,
+	AppleInterruptControllerGetLocalUnitError,
+	AppleInterruptControllerClearLocalUnitError,
+	AppleInterruptControllerGetLogicalId,
+	AppleInterruptControllerSetLogicalId,
+	AppleInterruptControllerAcceptAndGetSource,
+	AppleInterruptControllerEndOfInterrupt,
+	AppleInterruptControllerFastEndOfInterrupt,
+	AppleInterruptControllerSetLineState,
+	AppleInterruptControllerRequestInterrupt,
+	AppleInterruptControllerStartProcessor,
+	AppleInterruptControllerGenerateMessage,
+	AppleInterruptControllerConvertId,
+	AppleInterruptControllerSaveLocalInterrupts,
+	AppleInterruptControllerReplayLocalInterrupts,
+	AppleInterruptControllerDeinitializeLocalUnit,
+	AppleInterruptControllerDeinitializeIoUnit,
+	AppleInterruptControllerQueryAndGetSource,
+	AppleInterruptControllerDeactivateInterrupt,
+	AppleInterruptControllerDirectedEndOfInterrupt,
+	AppleInterruptControllerQueryLocalUnitInfo,
+	AppleInterruptControllerQueryPendingState,
+	AppleInterruptControllerCaptureGlobalCrashdumpState,
+	AppleInterruptControllerCaptureProcessorCrashdumpState,
+};
+
+
 
 NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
 	//

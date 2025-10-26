@@ -20,7 +20,7 @@
 
 STATIC UINT64 gAppleInterruptControllerBase;
 STATIC APPLE_INTERRUPT_CONTROLLER_VERSION gAicVersion;
-STATIC UINT32 gAicMaxIrqs, gAicMaskSetOffset, gAicMaskClearOffset;
+STATIC UINT32 gAicNumIrqs, gAicMaxIrqs, gAicMaskSetOffset, gAicMaskClearOffset;
 
 //
 // The Apple Interrupt Controller (AIC) is a non-standard IRQ controller used on Apple's ARM-based platforms since the A5 to
@@ -38,6 +38,8 @@ STATIC UINT32 gAicMaxIrqs, gAicMaskSetOffset, gAicMaskClearOffset;
 // Since it's non-standard, the Windows HAL doesn't include any support for it, and as a result,
 // we need to add support via a HAL Extension, but since the normal HAL Extension imports don't support registering IRQ chips specifically, we
 // need to find the function that does the registration and call it directly.
+// 
+// TODO: Find out how we want to handle IPIs on newer AIC platforms, because those come via FIQs (so called "Fast IPIs") on newer platforms.
 //
 
 
@@ -75,7 +77,6 @@ NTSTATUS AppleInterruptControllerSetInterruptMaskClear(UINT32 IrqNum) {
 	return NT_SUCCESS;
 }
 
-
 //
 // The AIC IRQ controller function table.
 // NOTE: I am pretty sure not all of these functions need to exist, and we probably won't need all of them, and if that's the case, the function itself can be replaced with a NULL, 
@@ -111,7 +112,24 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable {
 	AppleInterruptControllerCaptureProcessorCrashdumpState,
 };
 
+//
+// Description:
+//   Registers the AIC with the HAL itself. Needs to call into HalpInterruptRegisterController
+//   which isn't part of the exported HAL Extensions API so we need to find that function ourselves.
+// 
+NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 
+	//
+	// Register the AIC MMIO addresses with the HAL.
+	//
+	HalRegisterPermanentAddressUsage(gAppleInterruptControllerFunctionBase, 0xC000);
+
+	//
+	// TODO: find the HalpInterruptRegisterController function, and store it's pointer to be called.
+	//
+	HalpInterruptRegisterController(gAicFunctionTable, NULL);
+	return NT_SUCCESS;
+}
 
 NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
 	//
@@ -122,9 +140,25 @@ NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
 	// - register the IRQ controller with the HAL by registering the address usage (this *is* in the HAL extension interface), and registering the
 	// controller itself (this is not in the HAL extension interface)
 	//
+
+	switch (gAicVersion) {
+		case APPLE_INTERRUPT_CONTROLLER_V1:
+			gAicNumIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V1_HW_INFO) & AIC_NUM_IRQ_MASK);
+			gAicMaxIrqs = AIC_V1_MAX_IRQ;
+			break;
+		case APPLE_INTERRUPT_CONTROLLER_V2:
+			gAicNumIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V2_INFO_REG1) & AIC_NUM_IRQ_MASK);
+			gAicMaxIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V2_INFO_REG3) & AIC_NUM_IRQ_MASK);
+			break;
+		default:
+			ASSERTMSG("Failed to get number of AIC interrupts!", FALSE);
+	}
+	//
+	// Mask all AIC interrupts.
+	//
+	for (UINT32 i = 0; i < gAicNumIrqs; i++) {
+
+	}
 	
-	//
-	// Commented out for now while the code is worked on.
-	//
-	//HalRegisterPermanentAddressUsage(gAppleInterruptControllerBase, 0xC000);
+	//Status = AppleInterruptControllerRegisterIoUnit();
 }

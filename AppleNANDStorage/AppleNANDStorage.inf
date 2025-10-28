@@ -1,0 +1,50 @@
+;
+; AppleNANDStorage.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%ManufacturerName%
+DriverVer=
+CatalogFile=AppleNANDStorage.cat
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+AppleNANDStorage.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$.10.0...16299 ; %13% support introduced in build 16299
+
+[Standard.NT$ARCH$.10.0...16299]
+%AppleNANDStorage.DeviceDesc% = AppleNANDStorage_Device, ACPI\APPL0001
+
+[AppleNANDStorage_Device.NT]
+CopyFiles = File_Copy
+
+[File_Copy]
+AppleNANDStorage.sys
+
+[AppleNANDStorage_Device.NT.Services]
+AddService = AppleNANDStorage, %SPSVCINST_ASSOCSERVICE%, AppleNANDStorage_Service_Inst
+
+[AppleNANDStorage_Service_Inst]
+DisplayName    = %AppleNANDStorage.ServiceDesc%
+ServiceType    = 1 ; SERVICE_KERNEL_DRIVER
+StartType      = 0 ; SERVICE_BOOT_START
+ErrorControl   = 1 ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\AppleNANDStorage.sys
+
+[Strings]
+SPSVCINST_ASSOCSERVICE = 0x00000002
+ManufacturerName = "AppleWOA"
+DiskName = "Apple NAND Storage Driver Installation CD"
+AppleNANDStorage.DeviceDesc = "Apple NAND Storage Device"
+AppleNANDStorage.ServiceDesc = "Apple NAND Storage Driver Service"

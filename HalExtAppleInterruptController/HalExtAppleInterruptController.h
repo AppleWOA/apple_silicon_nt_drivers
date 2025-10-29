@@ -48,7 +48,7 @@ typedef enum {
     APPLE_INTERRUPT_CONTROLLER_V1,
     APPLE_INTERRUPT_CONTROLLER_V2,
     APPLE_INTERRUPT_CONTROLLER_V3,
-    APPLE_INTERRUPT_CONTROLLER_VER_UNKNOWN
+    APPLE_INTERRUPT_CONTROLLER_VER_UNKNOWN = 0xFFFF
 } APPLE_INTERRUPT_CONTROLLER_VERSION;
 
 //
@@ -78,7 +78,7 @@ typedef enum {
 // AICv1 defines.
 // 
 
-#define AIC_MAX_IRQ	0x400
+#define AIC_V1_MAX_IRQ	0x400
 #define AIC_TARGET_CPU 0x3000
 #define AIC_V1_HW_INFO 0x0004
 // AIC_WHOAMI in m1n1/Linux sources
@@ -170,6 +170,17 @@ struct _INTERRUPT_LINE_STATE {
 	UINT32 Priority;
 };
 
+enum _KNOWN_CONTROLLER_TYPE {
+	InterruptControllerInvalid,
+	InterruptControllerPic,
+	InterruptControllerApic,
+	InterruptControllerGic,
+	InterruptControllerGicV3,
+	InterruptControllerGicV4,
+	InterruptControllerBcm,
+	InterruptControllerUnknown = 0x1000,
+};
+
 //
 // as of Germanium (26100), this is the function table used for IRQ chips registered to the HAL.
 //
@@ -202,5 +213,22 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*CaptureProcessorCrashdumpState)(PVOID, UINT32);
 
 } INTERRUPT_FUNCTION_TABLE;
+
+//
+// This defintiion is extrapolated based on reversing the 26100 kernel + the timer initialization block's definition in nthalext.h.
+//
+typedef struct _INTERRUPT_INTIIALIZATION_BLOCK {
+	SOC_INITIALIZATION_HEADER Header; // 0x0
+	INTERRUPT_FUNCTION_TABLE FunctionTable; // 0x8
+	PVOID InternalData; //0xD8
+	UINT32 InternalDataSize; // 0xE0
+	KNOWN_CONTROLLER_TYPE KnownType; // 0xE4
+	UINT32 UnitId; // 0xE8
+	UINT32 Capabilities; // 0xEC
+	UINT32 MaxPriority; // 0xF0
+	UINT32 MaxClusterSize; //0xF4
+	UINT32 MaxClusters; //0xF8
+	UINT32 InterruptReplayDataSize; //0xFC
+} INTERRUPT_INITIALIZATION_BLOCK, *PINTERRUPT_INITIALIZATION_BLOCK;
 
 #endif // !HAL_EXT_APPLE_INTERRUPT_CONTROLLER_H

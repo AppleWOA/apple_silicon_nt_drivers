@@ -21,6 +21,7 @@
 STATIC UINT64 gAppleInterruptControllerBase;
 STATIC APPLE_INTERRUPT_CONTROLLER_VERSION gAicVersion;
 STATIC UINT32 gAicNumIrqs, gAicMaxIrqs, gAicMaskSetOffset, gAicMaskClearOffset;
+STATIC INTERRUPT_INITIALIZATION_BLOCK gAicInitBlock;
 
 //
 // The Apple Interrupt Controller (AIC) is a non-standard IRQ controller used on Apple's ARM-based platforms since the A5 to
@@ -42,25 +43,7 @@ STATIC UINT32 gAicNumIrqs, gAicMaxIrqs, gAicMaskSetOffset, gAicMaskClearOffset;
 // TODO: Find out how we want to handle IPIs on newer AIC platforms, because those come via FIQs (so called "Fast IPIs") on newer platforms.
 //
 
-
-NTSTATUS AppleInterruptControllerInterruptMaskSet(UINT32 IrqNum) {
-	UINT32 CpuDieOffset;
-	switch (gAicVersion) {
-	case APPLE_INTERRUPT_CONTROLLER_V1:
-		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
-		break;
-	case APPLE_INTERRUPT_CONTROLLER_V2:
-	case APPLE_INTERRUPT_CONTROLLER_V3:
-		//
-		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
-		//
-		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + CpuDieOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
-		break;
-	}
-	return NT_SUCCESS;
-}
-
-NTSTATUS AppleInterruptControllerSetInterruptMaskClear(UINT32 IrqNum) {
+NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerContext, UINT32 IrqNum) {
 	UINT32 CpuDieOffset;
 	switch (gAicVersion) {
 	case APPLE_INTERRUPT_CONTROLLER_V1:
@@ -72,6 +55,23 @@ NTSTATUS AppleInterruptControllerSetInterruptMaskClear(UINT32 IrqNum) {
 		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
 		//
 		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskClearOffset + CpuDieOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
+		break;
+	}
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerDeactivateInterrupt(PVOID InterruptControllerContext, UINT32 IrqNum) {
+	UINT32 CpuDieOffset;
+	switch (gAicVersion) {
+	case APPLE_INTERRUPT_CONTROLLER_V1:
+		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
+		break;
+	case APPLE_INTERRUPT_CONTROLLER_V2:
+	case APPLE_INTERRUPT_CONTROLLER_V3:
+		//
+		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
+		//
+		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + CpuDieOffset + AIC_MASK_BIT(IrqNumber), AIC_MASK_BIT(IrqNum));
 		break;
 	}
 	return NT_SUCCESS;
@@ -119,6 +119,8 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable {
 // 
 NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 
+	gAicInitBlock.FunctionTable = gAicFunctionTable;
+
 	//
 	// Register the AIC MMIO addresses with the HAL.
 	//
@@ -126,8 +128,9 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 
 	//
 	// TODO: find the HalpInterruptRegisterController function, and store it's pointer to be called.
+	// The below is just a representation of what would be called.
 	//
-	HalpInterruptRegisterController(gAicFunctionTable, NULL);
+	HalpInterruptRegisterController(&gAicInitBlock, NULL);
 	return NT_SUCCESS;
 }
 

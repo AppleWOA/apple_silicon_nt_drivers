@@ -109,7 +109,7 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable {
 	AppleInterruptControllerQueryLocalUnitInfo,
 	AppleInterruptControllerQueryPendingState,
 	AppleInterruptControllerCaptureGlobalCrashdumpState,
-	AppleInterruptControllerCaptureProcessorCrashdumpState,
+	AppleInterruptControllerCaptureProcessorCrashdumpState
 };
 
 //
@@ -119,7 +119,23 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable {
 // 
 NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 
+	gAicInitBlock.Header.TableVersion = 1;
+	gAicInitBlock.Header.TableSize = sizeof(INTERRUPT_INITIALIZATION_BLOCK);
+
+	//
+	// We have no internal data at the moment, if this changes, these need to be updated.
+	//
+	gAicInitBlock.InternalData = NULL;
+	gAicInitBlock.InternalDataSize = 0;
+
+	//
+	// Fake our known controller type as a GICv1/GICv2 controller.
+	//
+	gAicInitBlock.KnownType = InterruptControllerGic;
+
 	gAicInitBlock.FunctionTable = gAicFunctionTable;
+
+	//
 
 	//
 	// Register the AIC MMIO addresses with the HAL.
@@ -137,7 +153,7 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
 	//
 	// TODO: literally everything, including the following:
-	// - find the AIC version, this should be inferrable via the ACPI tables the UEFI hands us.
+	// - find the AIC version, this should be inferrable via CSRT.
 	// - get the number of total supported IRQs and actually implemented ones on our platform.
 	// - mask all interrupts, this is easy.
 	// - register the IRQ controller with the HAL by registering the address usage (this *is* in the HAL extension interface), and registering the

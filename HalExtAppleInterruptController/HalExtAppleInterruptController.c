@@ -22,6 +22,7 @@ STATIC UINT64 gAppleInterruptControllerBase;
 STATIC APPLE_INTERRUPT_CONTROLLER_VERSION gAicVersion;
 STATIC UINT32 gAicNumIrqs, gAicMaxIrqs, gAicMaskSetOffset, gAicMaskClearOffset;
 STATIC INTERRUPT_INITIALIZATION_BLOCK gAicInitBlock;
+STATIC NTSTATUS (*HalpInterruptRegisterController)(PINTERRUPT_INITIALIZATION_BLOCK InterruptLoaderBlock, UINT32 Unused1, UINT64* Unused2); //this third variable *is* used on the GICv2/GICv3 HAL drivers...
 
 //
 // The Apple Interrupt Controller (AIC) is a non-standard IRQ controller used on Apple's ARM-based platforms since the A5 to
@@ -33,15 +34,52 @@ STATIC INTERRUPT_INITIALIZATION_BLOCK gAicInitBlock;
 // while in AICv2 and AICv3, there's a hardware heuristic that relies on cores opting in and out of interrupts as needed.
 // 
 // Note that some interrupts on AIC platforms are actually not delivered by the AIC itself and are instead delivered by the core's peripheral directly as an FIQ
-// (all of these interrupts are what would be PPIs in a GIC-based system, such as interrupts from the PMU or timer interrupts), not fully sure how we want to handle these
-// yet.
+// (all of these interrupts are what would be PPIs in a GIC-based system, such as interrupts from the PMU or timer interrupts).
 // 
 // Since it's non-standard, the Windows HAL doesn't include any support for it, and as a result,
 // we need to add support via a HAL Extension, but since the normal HAL Extension imports don't support registering IRQ chips specifically, we
 // need to find the function that does the registration and call it directly.
 // 
-// TODO: Find out how we want to handle IPIs on newer AIC platforms, because those come via FIQs (so called "Fast IPIs") on newer platforms.
 //
+
+//
+// The parameters here have yet to be RE'd, just use a stub for now for anything that isn't clear on purpose.
+//
+NTSTATUS AppleInterruptControllerInitializeLocalUnit(PVOID InterruptControllerContext, UINT32 Param1, UINT32 Param2, UINT32 Param3, UINT32 Param4, PUINT32 Param5) {
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerIniitalizeIoUnit(PVOID InterruptControllerContext) {
+	return NT_SUCCESS;
+}
+
+VOID AppleInterruptControllerSetPriority(PVOID InterruptControllerContext, UINT32 Priority) {
+	//
+	// This one's tricky. AICv1 is the only version of AIC that supports manually setting affinity.
+	// For now, use a stub function for AICv2 (we might want to bring in that weird per-core IRQ opt-out at some point)
+	//
+	switch (gAicVersion) {
+		default:
+			break;
+	}
+	return;
+}
+
+VOID AppleInterruptControllerClearLocalUnitError(PVOID InterruptControllerContext) {
+	//
+	// AIC technically has no conception of a "local unit" (per-core MMIO), all the per-core interrupts
+	// on Apple platforms come as direct FIQs from the core itself.
+	//
+	return;
+}
+
+NTSTATUS AppleInterruptControllerGetLogicalId(PVOID InterruptControllerContext, _INTERRUPT_TARGET InterruptTarget) {
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerSetLogicalId(PVOID InterruptControllerContext, _INTERRUPT_TARGET InterruptTarget) {
+	return NT_SUCCESS;
+}
 
 NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerContext, UINT32 IrqNum) {
 	UINT32 CpuDieOffset;
@@ -60,7 +98,7 @@ NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerConte
 	return NT_SUCCESS;
 }
 
-NTSTATUS AppleInterruptControllerDeactivateInterrupt(PVOID InterruptControllerContext, UINT32 IrqNum) {
+VOID AppleInterruptControllerDeactivateInterrupt(PVOID InterruptControllerContext, UINT32 IrqNum) {
 	UINT32 CpuDieOffset;
 	switch (gAicVersion) {
 	case APPLE_INTERRUPT_CONTROLLER_V1:
@@ -83,7 +121,7 @@ NTSTATUS AppleInterruptControllerDeactivateInterrupt(PVOID InterruptControllerCo
 // but these are all the defined functions a registered interrupt controller can have with the HAL and so this is the initial blueprint for moving forward.
 // Anything extra can absolutely be included, but this is the bare minimum "getting started" blueprint.
 //
-INTERRUPT_FUNCTION_TABLE gAicFunctionTable {
+INTERRUPT_FUNCTION_TABLE gAicFunctionTable{
 	AppleInterruptControllerInitializeLocalUnit,
 	AppleInterruptControllerInitializeIoUnit,
 	AppleInterruptControllerSetPriority,
@@ -123,7 +161,7 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 	gAicInitBlock.Header.TableSize = sizeof(INTERRUPT_INITIALIZATION_BLOCK);
 
 	//
-	// We have no internal data at the moment, if this changes, these need to be updated.
+	// Internal data (the CSRT vendor data table) needs to be specified here.
 	//
 	gAicInitBlock.InternalData = NULL;
 	gAicInitBlock.InternalDataSize = 0;
@@ -143,41 +181,47 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 	HalRegisterPermanentAddressUsage(gAppleInterruptControllerFunctionBase, 0xC000);
 
 	//
-	// TODO: find the HalpInterruptRegisterController function, and store it's pointer to be called.
-	// The below is just a representation of what would be called.
+	// Call HalpInterruptRegisterController to register the controller.
+	// The entry should find that function pointer (right now this only works on 26100.1)
 	//
-	HalpInterruptRegisterController(&gAicInitBlock, NULL);
-	return NT_SUCCESS;
+	return HalpInterruptRegisterController(&gAicInitBlock, 0, NULL);
 }
 
 NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
 	//
 	// TODO: literally everything, including the following:
-	// - find the AIC version, this should be inferrable via CSRT.
-	// - get the number of total supported IRQs and actually implemented ones on our platform.
-	// - mask all interrupts, this is easy.
-	// - register the IRQ controller with the HAL by registering the address usage (this *is* in the HAL extension interface), and registering the
-	// controller itself (this is not in the HAL extension interface)
+	// - get the AIC version and base address via CSRT (Num/Max IRQs are easier to get in-driver)
+	// - mask all interrupts based on this information.
+	// - store the function pointer to HalpInterruptRegisterController, then call it.
 	//
+	UINT64 KernelExceptionHandler;
 
 	switch (gAicVersion) {
-		case APPLE_INTERRUPT_CONTROLLER_V1:
-			gAicNumIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V1_HW_INFO) & AIC_NUM_IRQ_MASK);
-			gAicMaxIrqs = AIC_V1_MAX_IRQ;
-			break;
-		case APPLE_INTERRUPT_CONTROLLER_V2:
-			gAicNumIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V2_INFO_REG1) & AIC_NUM_IRQ_MASK);
-			gAicMaxIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V2_INFO_REG3) & AIC_NUM_IRQ_MASK);
-			break;
-		default:
-			ASSERTMSG("Failed to get number of AIC interrupts!", FALSE);
+	case APPLE_INTERRUPT_CONTROLLER_V1:
+		gAicNumIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V1_HW_INFO) & AIC_NUM_IRQ_MASK);
+		gAicMaxIrqs = AIC_V1_MAX_IRQ;
+		break;
+	case APPLE_INTERRUPT_CONTROLLER_V2:
+		gAicNumIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V2_INFO_REG1) & AIC_NUM_IRQ_MASK);
+		gAicMaxIrqs = (READ_REGISTER_ULONG(gAppleInterruptControllerBase + AIC_V2_INFO_REG3) & AIC_NUM_IRQ_MASK);
+		break;
+	default:
+		ASSERTMSG("Failed to get number of AIC interrupts!", FALSE);
 	}
 	//
 	// Mask all AIC interrupts.
 	//
 	for (UINT32 i = 0; i < gAicNumIrqs; i++) {
-
+		AppleInterruptControllerDeactivateInterrupt(NULL, i);
 	}
-	
-	//Status = AppleInterruptControllerRegisterIoUnit();
+
+	//
+	// read VBAR_EL1 which contains the kernel exception handlers. For now (this will
+	// only work on 26100.1 until we develop better patch-find routines)
+	// apply the offset to get to HalpInterruptRegisterController
+	//
+	KernelExceptionHandler = ARM64_SYSREG(3, 0, 12, 0, 0);
+	HalpInterruptRegisterController = (PVOID)((KernelExceptionHandler - 0x19BD20));
+
+	Status = AppleInterruptControllerRegisterIoUnit();
 }

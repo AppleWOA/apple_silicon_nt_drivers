@@ -107,6 +107,58 @@ typedef enum {
 #define AIC_V2_CFG_ENABLE BIT(0)
 
 //
+// AIC controller general structure.
+//
+
+typedef struct _AIC_INFO {
+	//
+	// AIC base address. (Do we need a physical and virtual view? If we do, then this definition is the physical
+	// and should have PHYSICAL_ADDRESS type, the other will use a PUINT32 type, since AIC uses 32 bit MMIO accesses.)
+	//
+	UINT64 AppleInterruptControllerBase;
+
+	//
+	// AIC version. This is passed in by CSRT.
+	//
+	APPLE_INTERRUPT_CONTROLLER_VERSION AicVersion;
+
+	//
+	// Event register offset from AIC base.
+	//
+	UINT32 EventRegisterOffset;
+
+	//
+	// Number of IRQs implemented on the current platform.
+	//
+	UINT32 AicNumIrqs;
+
+	//
+	// Maximum number of IRQs supported by the current SoC/family. (For AICv1, this is a fixed number, while
+	// for AICv2 and AICv3, this needs to be determined by reading AIC info registers.)
+	//
+	UINT32 AicMaxIrqs;
+
+	//
+	// Offsets to the IRQ mask set and IRQ mask clear registers. On AICv2 and v3, these have to be calculated based on the maximum
+	// IRQs supported on the SoC/family.
+	//
+	UINT32 AicIrqMaskSetOffset;
+	UINT32 AicIrqMaskClearOffset;
+
+	//
+	//	Offsets to software-defined IRQ mask set/clear registers. The calculation is similar to the above for AICv2 and v3.
+	//
+	UINT32 AicSwIrqMaskSetOffset;
+	UINT32 AicSwIrqMaskClearOffset;
+
+	//
+	// Offset to HW state registers.
+	//
+
+
+} AIC_INFO, *P_AIC_INFO;
+
+//
 // NT HAL specific typedefs, structs, and macros
 //
 

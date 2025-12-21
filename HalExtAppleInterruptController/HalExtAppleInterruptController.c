@@ -18,9 +18,7 @@
 #include <nthalext.h>
 #include "HalExtAppleInterruptController.h"
 
-STATIC UINT64 gAppleInterruptControllerBase;
-STATIC APPLE_INTERRUPT_CONTROLLER_VERSION gAicVersion;
-STATIC UINT32 gAicNumIrqs, gAicMaxIrqs, gAicMaskSetOffset, gAicMaskClearOffset;
+STATIC AIC_INFO gAicInfo;
 STATIC INTERRUPT_INITIALIZATION_BLOCK gAicInitBlock;
 STATIC NTSTATUS (*HalpInterruptRegisterController)(PINTERRUPT_INITIALIZATION_BLOCK InterruptLoaderBlock, UINT32 Unused1, UINT64* Unused2); //this third variable *is* used on the GICv2/GICv3 HAL drivers...
 
@@ -44,24 +42,28 @@ STATIC NTSTATUS (*HalpInterruptRegisterController)(PINTERRUPT_INITIALIZATION_BLO
 
 //
 // The parameters here have yet to be RE'd, just use a stub for now for anything that isn't clear on purpose.
+// "InterruptControllerContext" here is the InternalData pointer passed into the initialization block. For now,
+// we're going to prefer using our own AIC_INFO structure, however it is good to keep CSRT InternalData around in case we need it.
 //
 NTSTATUS AppleInterruptControllerInitializeLocalUnit(PVOID InterruptControllerContext, UINT32 Param1, UINT32 Param2, UINT32 Param3, UINT32 Param4, PUINT32 Param5) {
 	return NT_SUCCESS;
 }
 
 NTSTATUS AppleInterruptControllerIniitalizeIoUnit(PVOID InterruptControllerContext) {
+	//
+	// The GICv2 driver seems to register IO units for every GIC device, but the GICv3 and BC2836 drivers in the HAL only register the single
+	// IO unit.
+	// In our case, we should only have the one IO unit, so we would probably follow the GICv3/BC2836 case here.
+	//
 	return NT_SUCCESS;
 }
 
 VOID AppleInterruptControllerSetPriority(PVOID InterruptControllerContext, UINT32 Priority) {
 	//
-	// This one's tricky. AICv1 is the only version of AIC that supports manually setting affinity.
-	// For now, use a stub function for AICv2 (we might want to bring in that weird per-core IRQ opt-out at some point)
+	// AIC does not permit us any control over priority in any version, 
+	// lower IRQs are treated as higher priority always. (per the Asahi Linux documentation of the driver in linux tree)
+	// This function will probably be NULLed out at some point.
 	//
-	switch (gAicVersion) {
-		default:
-			break;
-	}
 	return;
 }
 
@@ -69,6 +71,7 @@ VOID AppleInterruptControllerClearLocalUnitError(PVOID InterruptControllerContex
 	//
 	// AIC technically has no conception of a "local unit" (per-core MMIO), all the per-core interrupts
 	// on Apple platforms come as direct FIQs from the core itself.
+	// Regardless, this function won't be NULLed just yet.
 	//
 	return;
 }
@@ -78,6 +81,36 @@ NTSTATUS AppleInterruptControllerGetLogicalId(PVOID InterruptControllerContext, 
 }
 
 NTSTATUS AppleInterruptControllerSetLogicalId(PVOID InterruptControllerContext, _INTERRUPT_TARGET InterruptTarget) {
+	return NT_SUCCESS;
+}
+
+//_INTERRUPT_RESULT AppleInterruptControllerAcceptAndGetSource(PVOID InterruptControllerContext, PINT32 Param1, PUINT32 Param2) {
+//
+//}
+
+VOID AppleInterruptControllerEndOfInterrupt(PVOID InterruptControllerContext, UINT32 IrqNum) {
+	//
+	// For interrupts that originate from AIC itself (peripheral interrupts mostly), reading from the event register 
+	// automatically acknowledges and masks the IRQ (what would be the EOI event),
+	// so for safety's sake, read the event register just in case to clear any IRQs pending, then unmask the IRQ if we have to.
+	//
+	//
+	// For FIQs, we need to manually acknowledge and mask them ourselves. We might have to check for all the FIQ sources first, then
+	// check if it's an IRQ if it's not an FIQ source.
+	//
+
+	READ_REGISTER_ULONG(gAicInfo.AppleInterruptControllerBase + (UINT64)(gAicInfo.EventRegisterOffset));
+	return;
+}
+
+VOID AppleInterruptControllerFastEndOfInterrupt(VOID) {
+	//
+	// FastEndOfInterrupt would imply FIQs. Do we want to use this to signal EOI on the timer and other FIQs on Apple platforms?
+	//
+	return;
+}
+
+NTSTATUS AppleInterruptControllerSetLineState(PVOID InterruptControllerContext, _INTERRUPT_LINE* IrqLine, _INTERRUPT_LINE_STATE* IrqLineState) {
 	return NT_SUCCESS;
 }
 
@@ -98,6 +131,59 @@ NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerConte
 	return NT_SUCCESS;
 }
 
+NTSTATUS AppleInterruptControllerStartProcessor(PVOID InterruptControllerContext, UINT32 Param1, PVOID Param2, UINT32 Param3) {
+	//
+	// Very likely what triggers IPIs.
+	//
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerGenerateMessage(PVOID InterruptControllerContext, _INTERRUPT_LINE_STATE* IrqLineState, PUINT64 Param2, PUINT64 Param3) {
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerConvertId(PVOID InterruptControllerContext, PUINT32 Param1, _INTERRUPT_TARGET* IrqTarget, UINT8 Param3) {
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerSaveLocalInterrupts(PVOID InterruptControllerContext, PVOID Param1) {
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerReplayLocalInterrupts(PVOID InterruptControllerContext, PVOID Param1) {
+	//
+	// None of the supported IRQ controllers for ARM64 implement the ReplayLocalInterrupts function.
+	// Almost definitely behavior that's mostly for x86/AMD64 APIC or something else for non-ARM platforms.
+	// This will be NULLed out later.
+	//
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerDeinitializeLocalUnit(PVOID InterruptControllerContext) {
+	//
+	// As before, AIC devices technically do not have a conception of a local, per-core unit
+	// as those instead are done via per-core FIQs.
+	//
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerDeinitializeIoUnit(PVOID InterruptControllerContext) {
+	//
+	// What needs to be done here:
+	// - Mask all pending IRQs, and signal EOI on any pending interrupts.
+	// - Mask all FIQs.
+	// - On AICv2, turn off the AIC itself to disable it sending interrupts (AICv1 does not have an off switch as such, masking all IRQs is the best we can do there.
+	//
+	return NT_SUCCESS;
+}
+
+//_INTERRUPT_RESULT AppleInterruptControllerQueryAndGetSource(PVOID InterruptControllerInternalData, PINT32 IrqId, PUINT32 Param2, PUINT8 Param3) {
+//	//
+//	// This seems to be to detect if something is a line based or vector based IRQ?
+//	//
+//	return InterruptResultNone;
+//}
+
 VOID AppleInterruptControllerDeactivateInterrupt(PVOID InterruptControllerContext, UINT32 IrqNum) {
 	UINT32 CpuDieOffset;
 	switch (gAicVersion) {
@@ -115,6 +201,21 @@ VOID AppleInterruptControllerDeactivateInterrupt(PVOID InterruptControllerContex
 	return NT_SUCCESS;
 }
 
+VOID AppleInterruptControllerDirectedEndOfInterrupt(PVOID InterruptControllerContext, UINT32 Param1, UINT32 Param2) {
+	//
+	// None of the ARM64-supported IRQ controllers in the HAL implement DirectedEndOfInterrupt, so this will probably get NULLed out at some point.
+	//
+	return;
+}
+
+NTSTATUS AppleInterruptControllerQueryLocalUnitInfo(PVOID InterruptControllerContext, UINT32 Param1, PUINT32 Param2, PUINT32 Param3, _KINTERRUPT_MODE* Param4, _KINTERRUPT_MODE* Param5) {
+	return NT_SUCCESS;
+}
+
+NTSTATUS AppleInterruptControllerQueryPendingState(PVOID InterruptControllerContext, _INTERRUPT_LINE* IrqLine, PUINT8 Param2, PUINT8 Param3) {
+	return NT_SUCCESS;
+}
+
 //
 // The AIC IRQ controller function table.
 // NOTE: I am pretty sure not all of these functions need to exist, and we probably won't need all of them, and if that's the case, the function itself can be replaced with a NULL, 
@@ -129,7 +230,7 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable{
 	AppleInterruptControllerClearLocalUnitError,
 	AppleInterruptControllerGetLogicalId,
 	AppleInterruptControllerSetLogicalId,
-	AppleInterruptControllerAcceptAndGetSource,
+	NULL, //AcceptAndGetSource is nulled out for now, too risky to have a stub.
 	AppleInterruptControllerEndOfInterrupt,
 	AppleInterruptControllerFastEndOfInterrupt,
 	AppleInterruptControllerSetLineState,
@@ -141,13 +242,13 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable{
 	AppleInterruptControllerReplayLocalInterrupts,
 	AppleInterruptControllerDeinitializeLocalUnit,
 	AppleInterruptControllerDeinitializeIoUnit,
-	AppleInterruptControllerQueryAndGetSource,
+	NULL, //QueryAndGetSource is nulled out for now for similar reasons as AcceptAndGetSource.
 	AppleInterruptControllerDeactivateInterrupt,
 	AppleInterruptControllerDirectedEndOfInterrupt,
 	AppleInterruptControllerQueryLocalUnitInfo,
 	AppleInterruptControllerQueryPendingState,
-	AppleInterruptControllerCaptureGlobalCrashdumpState,
-	AppleInterruptControllerCaptureProcessorCrashdumpState
+	NULL, //CaptureGlobalCrashdumpState is nulled out for now.
+	NULL, //CaptureProcessorCrashdumpState is nulled out for now.
 };
 
 //
@@ -220,8 +321,10 @@ NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
 	// only work on 26100.1 until we develop better patch-find routines)
 	// apply the offset to get to HalpInterruptRegisterController
 	//
-	KernelExceptionHandler = ARM64_SYSREG(3, 0, 12, 0, 0);
+	KernelExceptionHandler = _ReadSystemReg(ARM64_SYSREG(3, 0, 12, 0, 0));
 	HalpInterruptRegisterController = (PVOID)((KernelExceptionHandler - 0x19BD20));
 
 	Status = AppleInterruptControllerRegisterIoUnit();
+
+	return Status;
 }

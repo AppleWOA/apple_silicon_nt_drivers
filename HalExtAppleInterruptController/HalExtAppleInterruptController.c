@@ -16,6 +16,18 @@
 */
 
 #include <nthalext.h>
+
+//
+// The sample DMA controller HAL Extension disables these warnings. Original descriptions below.
+//
+// Disable warning C4214: nonstandard extension used : bit field types other than int
+// Disable warning C4201: nonstandard extension used : nameless struct/union
+// Disable warning C4115: named type definition in parentheses
+// Disable warning C4127: conditional expression is constant
+// Disable warning C4200: zero-sized array in struct/union
+//
+#pragma warning(disable:4214 4201 4115 4127 4200)
+
 #include "HalExtAppleInterruptController.h"
 
 STATIC AIC_INFO gAicInfo;
@@ -31,6 +43,12 @@ STATIC NTSTATUS (*HalpInterruptRegisterController)(PINTERRUPT_INITIALIZATION_BLO
 // CPU-specific redistributors, with the controller doing all the interrupt routing itself. In AICv1 this is done via normal CPU affinities,
 // while in AICv2 and AICv3, there's a hardware heuristic that relies on cores opting in and out of interrupts as needed.
 // 
+// When reading from MASK_SET or MASK_CLR registers (symmetrically), the bits returned indicate IRQ mask status 
+// (1 = IRQ masked, 0 = IRQ not masked).
+// SW_SET and SW_CLR registers will read 0 bits for any IRQ that isn't assigned to a software function, and 1 for any that is assigned
+// to be software-generated. Note that the corresponding mask must still be cleared for the software interrupt to assert itself, and it must still be
+// handled appropriately.
+// 
 // Note that some interrupts on AIC platforms are actually not delivered by the AIC itself and are instead delivered by the core's peripheral directly as an FIQ
 // (all of these interrupts are what would be PPIs in a GIC-based system, such as interrupts from the PMU or timer interrupts).
 // 
@@ -45,7 +63,8 @@ STATIC NTSTATUS (*HalpInterruptRegisterController)(PINTERRUPT_INITIALIZATION_BLO
 // "InterruptControllerContext" here is the InternalData pointer passed into the initialization block. For now,
 // we're going to prefer using our own AIC_INFO structure, however it is good to keep CSRT InternalData around in case we need it.
 //
-NTSTATUS AppleInterruptControllerInitializeLocalUnit(PVOID InterruptControllerContext, UINT32 Param1, UINT32 Param2, UINT32 Param3, UINT32 Param4, PUINT32 Param5) {
+NTSTATUS AppleInterruptControllerInitializeLocalUnit(PVOID InterruptControllerContext, UINT32 Param1, UINT32 Param2, UINT32 Param3, UINT32 Param4, PUINT32 Aff0) {
+	
 	return NT_SUCCESS;
 }
 
@@ -60,9 +79,10 @@ NTSTATUS AppleInterruptControllerIniitalizeIoUnit(PVOID InterruptControllerConte
 
 VOID AppleInterruptControllerSetPriority(PVOID InterruptControllerContext, UINT32 Priority) {
 	//
-	// AIC does not permit us any control over priority in any version, 
+	// AIC does not permit us any control over IRQ priority in any version, 
 	// lower IRQs are treated as higher priority always. (per the Asahi Linux documentation of the driver in linux tree)
 	// This function will probably be NULLed out at some point.
+	// Note that due to being FIQs, per-core interrupts such as IPIs or timer interrupts have higher priority than even AIC interrupts.
 	//
 	return;
 }
@@ -76,6 +96,10 @@ VOID AppleInterruptControllerClearLocalUnitError(PVOID InterruptControllerContex
 	return;
 }
 
+//
+// These two functions are unimplemented by any of the ARM64-supported interrupt controllers,
+// so these might also get NULLed out (unless AIC needs these?)
+//
 NTSTATUS AppleInterruptControllerGetLogicalId(PVOID InterruptControllerContext, _INTERRUPT_TARGET InterruptTarget) {
 	return NT_SUCCESS;
 }
@@ -84,9 +108,18 @@ NTSTATUS AppleInterruptControllerSetLogicalId(PVOID InterruptControllerContext, 
 	return NT_SUCCESS;
 }
 
-//_INTERRUPT_RESULT AppleInterruptControllerAcceptAndGetSource(PVOID InterruptControllerContext, PINT32 Param1, PUINT32 Param2) {
-//
-//}
+_INTERRUPT_RESULT AppleInterruptControllerAcceptAndGetSource(PVOID InterruptControllerContext, PINT32 IrqId, PUINT32 IrqEventValue) {
+	//
+	// The GICv3 driver does an interrupt acknowledge, then writes the IRQ ID and the full event value to IrqId and IrqEventValue
+	// respectively. In our case, we will read from the event register, then write it's full value to IrqEventValue, with the extracted
+	// IRQ ID going into IrqId. Note that some IRQ IDs will be message-signaled, but we're treating all IRQ IDs as "Line" interrupts for now.
+	//
+	ULONG AicEvent;
+	AicEvent = READ_REGISTER_ULONG(gAicInfo.AppleInterruptControllerBase + (UINT64)(gAicInfo.EventRegisterOffset));
+	*IrqId = AicEvent & 0xFFFF; // the lower 16 bits encode the IRQ number.
+	*IrqEventValue = AicEvent;
+	return InterruptBeginLine;
+}
 
 VOID AppleInterruptControllerEndOfInterrupt(PVOID InterruptControllerContext, UINT32 IrqNum) {
 	//
@@ -98,8 +131,9 @@ VOID AppleInterruptControllerEndOfInterrupt(PVOID InterruptControllerContext, UI
 	// For FIQs, we need to manually acknowledge and mask them ourselves. We might have to check for all the FIQ sources first, then
 	// check if it's an IRQ if it's not an FIQ source.
 	//
+	ULONG AicEvent;
 
-	READ_REGISTER_ULONG(gAicInfo.AppleInterruptControllerBase + (UINT64)(gAicInfo.EventRegisterOffset));
+	AicEvent = READ_REGISTER_ULONG(gAicInfo.AppleInterruptControllerBase + (UINT64)(gAicInfo.EventRegisterOffset));
 	return;
 }
 
@@ -172,7 +206,7 @@ NTSTATUS AppleInterruptControllerDeinitializeIoUnit(PVOID InterruptControllerCon
 	// What needs to be done here:
 	// - Mask all pending IRQs, and signal EOI on any pending interrupts.
 	// - Mask all FIQs.
-	// - On AICv2, turn off the AIC itself to disable it sending interrupts (AICv1 does not have an off switch as such, masking all IRQs is the best we can do there.
+	// - On AICv2, turn off the AIC itself to disable it sending interrupts (AICv1 does not have an off switch as such, masking all IRQs is the best we can do there.)
 	//
 	return NT_SUCCESS;
 }
@@ -230,7 +264,7 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable{
 	AppleInterruptControllerClearLocalUnitError,
 	AppleInterruptControllerGetLogicalId,
 	AppleInterruptControllerSetLogicalId,
-	NULL, //AcceptAndGetSource is nulled out for now, too risky to have a stub.
+	AppleInterruptControllerAcceptAndGetSource,
 	AppleInterruptControllerEndOfInterrupt,
 	AppleInterruptControllerFastEndOfInterrupt,
 	AppleInterruptControllerSetLineState,
@@ -242,7 +276,7 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable{
 	AppleInterruptControllerReplayLocalInterrupts,
 	AppleInterruptControllerDeinitializeLocalUnit,
 	AppleInterruptControllerDeinitializeIoUnit,
-	NULL, //QueryAndGetSource is nulled out for now for similar reasons as AcceptAndGetSource.
+	NULL, //QueryAndGetSource is nulled out for now.
 	AppleInterruptControllerDeactivateInterrupt,
 	AppleInterruptControllerDirectedEndOfInterrupt,
 	AppleInterruptControllerQueryLocalUnitInfo,
@@ -268,9 +302,10 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 	gAicInitBlock.InternalDataSize = 0;
 
 	//
-	// Fake our known controller type as a GICv1/GICv2 controller.
+	// Mark our interrupt controller type as unknown. 
+	// (if we do need to fake a controller, fake the GICv2 controller, but unknown helps us dodge some GIC quirks in the kernel.)
 	//
-	gAicInitBlock.KnownType = InterruptControllerGic;
+	gAicInitBlock.KnownType = InterruptControllerUnknown;
 
 	gAicInitBlock.FunctionTable = gAicFunctionTable;
 
@@ -285,7 +320,8 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit() {
 	// Call HalpInterruptRegisterController to register the controller.
 	// The entry should find that function pointer (right now this only works on 26100.1)
 	//
-	return HalpInterruptRegisterController(&gAicInitBlock, 0, NULL);
+	Status = HalpInterruptRegisterController(&gAicInitBlock, 0, NULL);
+	ASSERT("AIC initialization failed!", Status == NT_SUCCESS);
 }
 
 NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
@@ -321,8 +357,8 @@ NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
 	// only work on 26100.1 until we develop better patch-find routines)
 	// apply the offset to get to HalpInterruptRegisterController
 	//
-	KernelExceptionHandler = _ReadSystemReg(ARM64_SYSREG(3, 0, 12, 0, 0));
-	HalpInterruptRegisterController = (PVOID)((KernelExceptionHandler - 0x19BD20));
+	KernelExceptionHandler = _ReadSystemReg(ARM64_SYSREG(3, 0, 12, 0, 0)); // read VBAR_EL1
+	HalpInterruptRegisterController = (PVOID)((UINT64)((KernelExceptionHandler - 0x19BD20))); // this mess of typecasts is so that the inner expression is a UINT64, *then* cast to pointer...
 
 	Status = AppleInterruptControllerRegisterIoUnit();
 

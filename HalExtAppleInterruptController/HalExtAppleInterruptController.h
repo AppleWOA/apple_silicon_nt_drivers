@@ -142,7 +142,9 @@ typedef struct _AIC_INFO {
 	// AIC base address. (Do we need a physical and virtual view? If we do, then this definition is the physical
 	// and should have PHYSICAL_ADDRESS type, the other will use a PUINT32 type, since AIC uses 32 bit MMIO accesses.)
 	//
-	UINT64 AppleInterruptControllerBase;
+	PHYSICAL_ADDRESS AppleInterruptControllerBasePhys;
+	PUINT32 AppleInterruptControllerBaseVirt;
+	UINT32 AppleInterruptControllerSize;
 
 	//
 	// AIC version. This is passed in by CSRT.
@@ -173,7 +175,7 @@ typedef struct _AIC_INFO {
 	UINT32 AicIrqMaskClearOffset;
 
 	//
-	//	Offsets to software-defined IRQ mask set/clear registers. The calculation is similar to the above for AICv2 and v3.
+	// Offsets to software-defined IRQ mask set/clear registers. The calculation is similar to the above for AICv2 and v3.
 	//
 	UINT32 AicSwIrqMaskSetOffset;
 	UINT32 AicSwIrqMaskClearOffset;
@@ -181,9 +183,25 @@ typedef struct _AIC_INFO {
 	//
 	// Offset to HW state registers.
 	//
-
+	UINT32 AicHwStateOffset;
 
 } AIC_INFO, *P_AIC_INFO;
+
+typedef struct
+{
+	ULONG Length;
+	ULONG Type; // for now "1" will be AICv1, "2" will be AICv2 and "3" will be AICv3
+	ULONGLONG ControllerBaseAddress;
+	ULONG ControllerBaseSize;
+	ULONG NumIrqs;
+	ULONG MaxIrqs;
+} INTERRUPT_CONTROLLER_VENDOR_DATA;
+
+typedef struct
+{
+	CSRT_RESOURCE_DESCRIPTOR_HEADER InterruptControllerHeader;
+	INTERRUPT_CONTROLLER_VENDOR_DATA ControllerVendorData;
+} RD_INTERRUPT_CONTROLLER;
 
 //
 // NT HAL specific typedefs, structs, and macros
@@ -315,17 +333,23 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 // - GIC(v2): 0x77 (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL 
 // | INTERRUPT_CONTROLLER_HAS_PRIORITIES 
 // | INTERRUPT_CONTROLLER_HAS_LOGICAL_FLAT_LIMIT 
-// | INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY 
 // | INTERRUPT_CONTROLLER_IPI_CONTROL_MASK)
 // 
-// - GICv3: in the LPI supported case, 0x12B (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL | INTERRUPT_CONTROLLER_HAS_PRIORITIES | INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY | BIT(5) | INTERRUPT_CONTROLLER_SUPPORTS_INTERRUPT_REMAP)
+// - GICv3: in the LPI supported case, 0x12B (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL 
+// | INTERRUPT_CONTROLLER_HAS_PRIORITIES 
+// | INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY 
+// | BIT(5) 
+// | INTERRUPT_CONTROLLER_SUPPORTS_INTERRUPT_REMAP)
 // (note it will sometimes leave the Capabilities bitmask alone)
-// in the LPI not supported case: 0x82B (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL | INTERRUPT_CONTROLLER_HAS_PRIORITIES | INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY | BIT(5) | INTERRUPT_CONTROLLER_SUPPORTS_HV_MSI_REMAPPING)
+// in the LPI not supported case: 0x82B (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL 
+// | INTERRUPT_CONTROLLER_HAS_PRIORITIES 
+// | INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY 
+// | BIT(5) 
+// | INTERRUPT_CONTROLLER_SUPPORTS_HV_MSI_REMAPPING)
 // 
 // - BCM2836: 0x277 (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL 
 // | INTERRUPT_CONTROLLER_HAS_PRIORITIES 
 // | INTERRUPT_CONTROLLER_HAS_LOGICAL_FLAT_LIMIT 
-// | INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY 
 // | INTERRUPT_CONTROLLER_IPI_CONTROL_MASK | INTERRUPT_CONTROLLER_REQUIRES_MASK_BEFORE_SET_LINE_STATE) (GICv2 + that mask requirement)
 // 
 //
@@ -347,12 +371,12 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 
 //
 // This bit indicates whether an IRQ controller has a logical flat limit (might be related to how many total cores it can service?)
+// GIC(v2) sets this bit.
 //
 #define INTERRUPT_CONTROLLER_HAS_LOGICAL_FLAT_LIMIT BIT(2)
 
 //
 // This bit indicates an unknown IRQ controller property regarding cluster ordering for interrupts.
-// GIC(v2) sets this bit.
 //
 #define INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY BIT(3)
 
@@ -387,7 +411,6 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 
 
 
-
 //
 // This defintiion is extrapolated based on reversing the 26100 kernel + the timer initialization block's definition in nthalext.h.
 //
@@ -395,14 +418,50 @@ typedef struct _INTERRUPT_INITIALIZATION_BLOCK {
 	SOC_INITIALIZATION_HEADER Header; // 0x0
 	INTERRUPT_FUNCTION_TABLE FunctionTable; // 0x8
 	PVOID InternalData; //0xD8
-	UINT32 InternalDataSize; // 0xE0
+	ULONG InternalDataSize; // 0xE0
 	KNOWN_CONTROLLER_TYPE KnownType; // 0xE4
-	UINT32 UnitId; // 0xE8
-	UINT32 Capabilities; // 0xEC
-	UINT32 MaxPriority; // 0xF0
-	UINT32 MaxClusterSize; //0xF4
-	UINT32 MaxClusters; //0xF8
-	UINT32 InterruptReplayDataSize; //0xFC
+	ULONG UnitId; // 0xE8
+	ULONG Capabilities; // 0xEC
+	ULONG MaxPriority; // 0xF0
+	ULONG MaxClusterSize; //0xF4
+	ULONG MaxClusters; //0xF8
+	ULONG InterruptReplayDataSize; //0xFC
 } INTERRUPT_INITIALIZATION_BLOCK, *PINTERRUPT_INITIALIZATION_BLOCK;
+
+//
+// Yes, this is needed...
+//
+
+enum _INTERRUPT_LINE_TYPE {
+	InterruptLineInvalidType,
+	InterruptLineUnusable,
+	InterruptLineStandardPin,
+	InterruptLineProcessorLocal,
+	InterruptLineSoftwareOnly,
+	InterruptLineSoftwareOnlyProcessorLocal,
+	InterruptLineOutputPin,
+	InterruptLineMsi
+};
+
+enum _INTERRUPT_LINE_SUBTYPE {
+	InterruptLineSubTypeNone,
+	InterruptLineSubTypeV2m,
+	InterruptLineSubTypeLpi
+};
+
+//
+// This definition is based on reversing of the HAL of 26100.1. Note that at the moment this definition is likely incorrect.
+//
+typedef struct _INTERRUPT_LINE_INITIALIZATION_BLOCK {
+	UINT32 UnitId; // 0x0
+	INT32 MinLine; // 0x4
+	INT32 MaxLine; // 0x8
+	_INTERRUPT_LINE_TYPE Type; // 0xC
+	_INTERRUPT_LINE_SUBTYPE SubType; // 0x10
+	UINT32 ControllerId; // 0x14
+	UINT32 GsiBase; // 0x18
+	UINT64 MsiAddress; //0x20
+	UINT32 MsiData; // 0x28
+} INTERRUPT_LINE_INITIALIZATION_BLOCK, *PINTERRUPT_LINE_INITIALIZATION_BLOCK;
 
 #endif // !HAL_EXT_APPLE_INTERRUPT_CONTROLLER_H

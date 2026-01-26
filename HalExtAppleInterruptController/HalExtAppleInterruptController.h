@@ -34,10 +34,10 @@
 
 #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
 
-#define ALIGN(x,a)		__ALIGN_MASK((x),(typeof(x))(a)-1)
-#define ALIGN_DOWN(x, a)	ALIGN((x) - ((a) - 1), (a))
-#define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
-#define PTR_ALIGN(p, a)		((typeof(p))ALIGN((unsigned long)(p), (a)))
+//#define ALIGN(x,a)		__ALIGN_MASK((x),(typeof(x))(a)-1)
+//#define ALIGN_DOWN(x, a)	ALIGN((x) - ((a) - 1), (a))
+//#define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
+//#define PTR_ALIGN(p, a)		((typeof(p))ALIGN((unsigned long)(p), (a)))
 
 
 //
@@ -143,7 +143,7 @@ typedef struct _AIC_INFO {
 	// and should have PHYSICAL_ADDRESS type, the other will use a PUINT32 type, since AIC uses 32 bit MMIO accesses.)
 	//
 	PHYSICAL_ADDRESS AppleInterruptControllerBasePhys;
-	PUINT32 AppleInterruptControllerBaseVirt;
+	volatile PULONG AppleInterruptControllerBaseVirt;
 	UINT32 AppleInterruptControllerSize;
 
 	//
@@ -211,7 +211,7 @@ typedef struct
 // All of these definitions come from the type information that's put into the 26100 kernel public PDB symbols shipped publicly by Microsoft.
 //
 
-enum _INTERRUPT_TARGET_TYPE {
+typedef enum _INTERRUPT_TARGET_TYPE {
 	InterruptTargetInvalid,
 	InterruptTargetAllIncludingSelf,
 	InterruptTargetAllExcludingSelf,
@@ -221,53 +221,37 @@ enum _INTERRUPT_TARGET_TYPE {
 	InterruptTargetLogicalClustered,
 	InterruptTargetRemapIndex,
 	InterruptTargetHypervisor,
-};
+} INTERRUPT_TARGET_TYPE;
 
-enum _INTERRUPT_RESULT {
+typedef enum _INTERRUPT_RESULT {
 	InterruptBeginFatalError,
 	InterruptBeginLine,
 	InterruptBeginSpurious,
 	InterruptBeginVector,
 	InterruptBeginNone,
-};
+} INTERRUPT_RESULT;
 
-enum _KINTERRUPT_PRIORITY {
-	InterruptPolarityUnknown = 0,
-	InterruptActiveHigh = 1,
-	InterruptRisingEdge = 1,
-	InterruptActiveLow = 2,
-	InterruptFallingEdge = 2,
-	InterruptActiveBoth = 3,
-	InterruptActiveBothTriggerLow = 3,
-	InterruptActiveBothTriggerHigh = 4,
-};
+typedef struct _INTERRUPT_TARGET {
+	INTERRUPT_TARGET_TYPE Target;
+} INTERRUPT_TARGET;
 
-enum _KINTERRUPT_MODE {
-	LevelSensitive,
-	Latched
-};
-
-struct _INTERRUPT_TARGET {
-	_INTERRUPT_TARGET_TYPE Target;
-};
-
-struct _INTERRUPT_LINE {
+typedef struct _INTERRUPT_LINE {
 	UINT32 UnitId;
 	INT32 Line;
-};
+} INTERRUPT_LINE;
 
-struct _INTERRUPT_LINE_STATE {
-	_KINTERRUPT_POLARITY Polarity;
+typedef struct _INTERRUPT_LINE_STATE {
+	KINTERRUPT_POLARITY Polarity;
 	UINT8 EmulateActiveBoth;
-	_KINTERRUPT_MODE TriggerMode;
+	KINTERRUPT_MODE TriggerMode;
 	UINT32 Flags;
-	_INTERRUPT_LINE Routing;
-	_INTERRUPT_TARGET ProcessorTarget;
+	INTERRUPT_LINE Routing;
+	INTERRUPT_TARGET ProcessorTarget;
 	UINT32 Vector;
 	UINT32 Priority;
-};
+} INTERRUPT_LINE_STATE;
 
-enum _KNOWN_CONTROLLER_TYPE {
+typedef enum _KNOWN_CONTROLLER_TYPE {
 	InterruptControllerInvalid,
 	InterruptControllerPic,
 	InterruptControllerApic,
@@ -276,7 +260,7 @@ enum _KNOWN_CONTROLLER_TYPE {
 	InterruptControllerGicV4,
 	InterruptControllerBcm,
 	InterruptControllerUnknown = 0x1000,
-};
+} KNOWN_CONTROLLER_TYPE;
 
 //
 // as of Germanium (26100), this is the function table used for IRQ chips registered to the HAL.
@@ -288,25 +272,25 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*SetPriority)(PVOID, UINT32); // 0x10
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*GetLocalUnitError)(PVOID);// 0x18
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*ClearLocalUnitError)(PVOID); //0x20
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*GetLogicalId)(PVOID, _INTERRUPT_TARGET); // 0x28
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*SetLogicalId)(PVOID, _INTERRUPT_TARGET); //0x30
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) _INTERRUPT_RESULT(*AcceptAndGetSource)(PVOID, PINT32, PUINT32); // 0x38
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*GetLogicalId)(PVOID, INTERRUPT_TARGET); // 0x28
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*SetLogicalId)(PVOID, INTERRUPT_TARGET); //0x30
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) INTERRUPT_RESULT(*AcceptAndGetSource)(PVOID, PINT32, PUINT32); // 0x38
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*EndOfInterrupt)(PVOID, UINT32); // 0x40
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*FastEndOfInterrupt)(); // 0x48
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*SetLineState)(PVOID, _INTERRUPT_LINE*, _INTERRUPT_LINE_STATE*); // 0x50
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*RequestInterrupt)(PVOID, _INTERRUPT_LINE*, _INTERRUPT_TARGET*, UINT32, _INTERRUPT_LINE*); // 0x58
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*SetLineState)(PVOID, INTERRUPT_LINE*, INTERRUPT_LINE_STATE*); // 0x50
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*RequestInterrupt)(PVOID, INTERRUPT_LINE*, INTERRUPT_TARGET*, UINT32, INTERRUPT_LINE*); // 0x58
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*StartProcessor)(PVOID, UINT32, PVOID, UINT32); // 0x60
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*GenerateMessage)(PVOID, _INTERRUPT_LINE_STATE*, PUINT64, PUINT64); //0x68
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*ConvertId)(PVOID, PUINT32, _INTERRUPT_TARGET*, UINT8); // 0x70
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*GenerateMessage)(PVOID, INTERRUPT_LINE_STATE*, PUINT64, PUINT64); //0x68
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*ConvertId)(PVOID, PUINT32, INTERRUPT_TARGET*, UINT8); // 0x70
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*SaveLocalInterrupts)(PVOID, PVOID); //0x78 (required if interrupts can be replayed)
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*ReplayLocalInterrupts)(PVOID, PVOID); //0x80 (required if interrupts can be replayed)
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*DeinitializeLocalUnit)(PVOID); //0x88
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*DeinitializeIoUnit)(PVOID); // 0x90
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) _INTERRUPT_RESULT(*QueryAndGetSource)(PVOID, PINT32, PUINT32, PUINT8); // 0x98
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) INTERRUPT_RESULT(*QueryAndGetSource)(PVOID, PINT32, PUINT32, PUINT8); // 0x98
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*DeactivateInterrupt)(PVOID, UINT32); // 0xA0
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*DirectedEndOfInterrupt)(PVOID, UINT32, UINT32); //0xA8
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*QueryLocalUnitInfo)(PVOID, UINT32, PUINT32, PUINT32, _KINTERRUPT_MODE*, _KINTERRUPT_MODE*); //0xB0
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*QueryPendingState)(PVOID, _INTERRUPT_LINE*, PUINT8, PUINT8); //0xB8
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*QueryLocalUnitInfo)(PVOID, UINT32, PUINT32, PUINT32, KINTERRUPT_MODE*, KINTERRUPT_MODE*); //0xB0
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*QueryPendingState)(PVOID, INTERRUPT_LINE*, PUINT8, PUINT8); //0xB8
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*CaptureGlobalCrashdumpState)(PVOID); //0xC0
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*CaptureProcessorCrashdumpState)(PVOID, UINT32); // 0xC8
 
@@ -316,12 +300,13 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 // NT SoC API Interrupt Controller Capabilities (per reversing of 26100.1 ARM64 HAL, for documentation reasons)
 // [0] - whether the IRQ controller can be controlled on a per-processor basis. (Whether "local units" exist or not)
 // [1] - whether the IRQ controller supports setting priorities or not.
-// [2] - whether there's a "logical flat limit" on the IRQ controller (might be number of total processors?)
+// [2] - whether there's a "logical flat limit" on the IRQ controller (per APIC documentation, 
+// this seems to pertain to IRQ controller being able to address cores logically)
 // [3] - has to do with cluster order for interrupts?
-// [4] - IPI related
-// [5] - has to do with IPIs
-// [6] - has to do with IPIs as well (bits [6:4] seem shorthand related?)
-// [7] - unknown
+// [4] - IPIs can be addressed to all running cores including the current running core
+// [5] - IPIs can be addressed to all running cores excluding the current running core
+// [6] - IPIs can be addressed to just the running core
+// [7] - unknown, isn't set by any of the ARM64 controllers and there don't seem to be checks for it.
 // [8] - whether remapping is required/supported (GICv3 driver sets this bit if LPIs are supported)
 // [9] - whether IRQs have to be masked before changing the state of an interrupt.
 // [10] - whether the IRQ controller supports directing the EndOfInterrupt event.
@@ -338,13 +323,13 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 // - GICv3: in the LPI supported case, 0x12B (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL 
 // | INTERRUPT_CONTROLLER_HAS_PRIORITIES 
 // | INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY 
-// | BIT(5) 
+// | INTERRUPT_CONTROLLER_IPI_TO_ALL_CORES_EXCLUDING_SELF 
 // | INTERRUPT_CONTROLLER_SUPPORTS_INTERRUPT_REMAP)
 // (note it will sometimes leave the Capabilities bitmask alone)
 // in the LPI not supported case: 0x82B (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL 
 // | INTERRUPT_CONTROLLER_HAS_PRIORITIES 
 // | INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY 
-// | BIT(5) 
+// | INTERRUPT_CONTROLLER_IPI_TO_ALL_CORES_EXCLUDING_SELF 
 // | INTERRUPT_CONTROLLER_SUPPORTS_HV_MSI_REMAPPING)
 // 
 // - BCM2836: 0x277 (INTERRUPT_CONTROLLER_SUPPORTS_PER_PROCESSOR_CONTROL 
@@ -370,26 +355,47 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 #define INTERRUPT_CONTROLLER_HAS_PRIORITIES BIT(1)
 
 //
-// This bit indicates whether an IRQ controller has a logical flat limit (might be related to how many total cores it can service?)
-// GIC(v2) sets this bit.
+// This bit indicates whether an IRQ controller has a logical flat limit. 
+// (APIC terminology for "the core can address specific cores on the logical level" from some digging)
+// This bit seems to be dependent on local units being supported.
 //
 #define INTERRUPT_CONTROLLER_HAS_LOGICAL_FLAT_LIMIT BIT(2)
 
 //
 // This bit indicates an unknown IRQ controller property regarding cluster ordering for interrupts.
+// (Might be a similar thing as bit 2, OSDev wiki entry for APIC mentions a "logical cluster" mode)
+// This bit seems to be dependent on local units being supported.
 //
 #define INTERRUPT_CONTROLLER_CLUSTER_ORDER_IRQ_PROPERTY BIT(3)
 
 //
 // Bits [6:4] all relate to IPI control.
 //
+
+
+//
+// This bit indicates the interrupt controller is able to send IPIs to all cores including the running core.
+//
+#define INTERRUPT_CONTROLLER_IPI_TO_ALL_CORES_INCLUDING_SELF BIT(4)
+
+//
+// This bit indicates the interrupt controller can send IPIs to all cores excluding the running core.
+//
+#define INTERRUPT_CONTROLLER_IPI_TO_ALL_CORES_EXCLUDING_SELF BIT(5)
+
+//
+// This bit indicates the interrupt controller can send an IPI to the running core itself.
+//
+#define INTERRUPT_CONTROLLER_IPI_TO_SELF BIT(6)
+
+
 #define INTERRUPT_CONTROLLER_IPI_CONTROL_MASK (7 << 4) // a GENMASK(6, 4) works here too
 
 //
-// This bit indicates that the IRQ controller requires/supports interrupt remapping.
+// This bit indicates that the IRQ controller requires interrupt remapping. (Implies the platform supports interrupt remapping)
 // If this capability is set, then an IOMMU is also expected to be present and Windows must know about it.
 //
-#define INTERRUPT_CONTROLLER_SUPPORTS_INTERRUPT_REMAP BIT(8)
+#define INTERRUPT_CONTROLLER_REQUIRES_INTERRUPT_REMAP BIT(8)
 
 //
 // This bit indicates that before setting or changing the state of an interrupt, IRQs must be masked on the local processor first.
@@ -432,36 +438,36 @@ typedef struct _INTERRUPT_INITIALIZATION_BLOCK {
 // Yes, this is needed...
 //
 
-enum _INTERRUPT_LINE_TYPE {
-	InterruptLineInvalidType,
-	InterruptLineUnusable,
-	InterruptLineStandardPin,
-	InterruptLineProcessorLocal,
-	InterruptLineSoftwareOnly,
-	InterruptLineSoftwareOnlyProcessorLocal,
-	InterruptLineOutputPin,
-	InterruptLineMsi
-};
+typedef enum _INTERRUPT_LINE_TYPE {
+	InterruptLineInvalidType, // the default, just means "unassigned"
+	InterruptLineUnusable, // this line is unusable
+	InterruptLineStandardPin, // the equivalent to SPIs in GICv3, these are for hardware peripheral interrupts
+	InterruptLineProcessorLocal, // the equivalent to LPIs in GICv3, these are PPIs (in AIC case, these are FIQs)
+	InterruptLineSoftwareOnly, // other software-specific interrupts
+	InterruptLineSoftwareOnlyProcessorLocal, // the equivalent to SGIs in GICv3, these are mostly used for IPIs, but it can be other stuff too
+	InterruptLineOutputPin, // the Windows implementation of line 1 seems to always be an output pin.
+	InterruptLineMsi // MSIs
+} INTERRUPT_LINE_TYPE;
 
-enum _INTERRUPT_LINE_SUBTYPE {
+typedef enum _INTERRUPT_LINE_SUBTYPE {
 	InterruptLineSubTypeNone,
 	InterruptLineSubTypeV2m,
 	InterruptLineSubTypeLpi
-};
+} INTERRUPT_LINE_SUBTYPE;
 
 //
-// This definition is based on reversing of the HAL of 26100.1. Note that at the moment this definition is likely incorrect.
+// This definition is based on reversing of the HAL of 26100.1.
 //
 typedef struct _INTERRUPT_LINE_INITIALIZATION_BLOCK {
-	UINT32 UnitId; // 0x0
-	INT32 MinLine; // 0x4
-	INT32 MaxLine; // 0x8
-	_INTERRUPT_LINE_TYPE Type; // 0xC
-	_INTERRUPT_LINE_SUBTYPE SubType; // 0x10
-	UINT32 ControllerId; // 0x14
-	UINT32 GsiBase; // 0x18
-	UINT64 MsiAddress; //0x20
-	UINT32 MsiData; // 0x28
+	ULONG ControllerId; // 0x0 (IRQ controller identifier)
+	LONG MinLine; // 0x4
+	LONG MaxLine; // 0x8
+	INTERRUPT_LINE_TYPE Type; // 0xC
+	INTERRUPT_LINE_SUBTYPE SubType; // 0x10
+	ULONG ControllerIdForOutput; // 0x14 (only used if the line type is OutputPin)
+	ULONG GsiBase; // 0x18 (this *seems* to be "the mapping of the IRQ number to the HW's understanding of IRQ numbers" based on GICv3 code)
+	ULONGLONG MsiAddress; //0x20
+	ULONG MsiData; // 0x28
 } INTERRUPT_LINE_INITIALIZATION_BLOCK, *PINTERRUPT_LINE_INITIALIZATION_BLOCK;
 
 #endif // !HAL_EXT_APPLE_INTERRUPT_CONTROLLER_H

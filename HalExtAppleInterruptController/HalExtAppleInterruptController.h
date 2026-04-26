@@ -181,9 +181,14 @@ typedef struct _AIC_INFO {
 	UINT32 AicSwIrqMaskClearOffset;
 
 	//
-	// Offset to HW state registers.
+	// Offset to HW state registers. (A read-only view of the IRQ states)
 	//
 	UINT32 AicHwStateOffset;
+
+	//
+	// A boolean indicating the AIC is initialized and ready to go. (All ARM64 interrupt controllers in the HAL support a similar mechanism)
+	//
+	BOOLEAN AicInitialized;
 
 } AIC_INFO, *P_AIC_INFO;
 

@@ -48,7 +48,7 @@
 // (1 = IRQ masked, 0 = IRQ not masked).
 // SW_SET and SW_CLR registers will read 0 bits for any IRQ that isn't assigned to a software function, and 1 for any that is assigned
 // to be software-generated. Note that the corresponding mask must still be cleared for the software interrupt to assert itself, and it must still be
-// handled appropriately.
+// handled appropriately. HW_STATE provides a read-only view of these registers for the purpose of checking an IRQ's mask state.
 // 
 // Note that some interrupts on AIC platforms are actually not delivered by the AIC itself and 
 // are instead delivered by the core's peripheral directly as an FIQ.
@@ -62,6 +62,102 @@
 // the interrupt controller must also be found directly.
 // 
 //
+
+//
+// Helper functions for AIC during normal operation. These are what tend to drive the actual hardware
+// in our implementation.
+//
+
+NTSTATUS AppleInterruptControllerMaskInterrupt(PVOID InterruptControllerContext, ULONG IrqNum) {
+	ULONG CpuDieOffset;
+	UINT32 MaskBit;
+	UINT32 MaskReg;
+	CpuDieOffset = 0;
+	MaskBit = AIC_MASK_BIT(IrqNum);
+	MaskReg = AIC_MASK_REG(IrqNum);
+	switch (gAicVersion) {
+	case APPLE_INTERRUPT_CONTROLLER_V1:
+		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicIrqMaskClearOffset + MaskReg, MaskBit);
+		break;
+	case APPLE_INTERRUPT_CONTROLLER_V2:
+	case APPLE_INTERRUPT_CONTROLLER_V3:
+		//
+		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
+		//
+		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicIrqMaskClearOffset + CpuDieOffset + MaskReg, MaskBit);
+		break;
+	}
+	return STATUS_SUCCESS;
+}
+
+inline NTSTATUS AppleInterruptControllerMarkInterruptAsPending(PVOID InterruptControllerContext, ULONG IrqNum) {
+	ULONG CpuDieOffset;
+	UINT32 MaskBit;
+	UINT32 MaskReg;
+	CpuDieOffset = 0;
+	MaskBit = AIC_MASK_BIT(IrqNum);
+	MaskReg = AIC_MASK_REG(IrqNum);
+	switch (gAicVersion) {
+	case APPLE_INTERRUPT_CONTROLLER_V1:
+		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicSwIrqMaskSetOffset + MaskReg, MaskBit);
+		break;
+	case APPLE_INTERRUPT_CONTROLLER_V2:
+	case APPLE_INTERRUPT_CONTROLLER_V3:
+		//
+		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
+		//
+		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicSwIrqMaskSetOffset + CpuDieOffset + MaskReg, MaskBit);
+		break;
+	}
+	return STATUS_SUCCESS;
+}
+
+BOOLEAN AppleInterruptControllerInterruptIsMasked(PVOID InterruptControllerContext, ULONG IrqNum) {
+	ULONG CpuDieOffset;
+	UINT32 MaskBit;
+	UINT32 MaskReg;
+	CpuDieOffset = 0;
+	MaskBit = AIC_MASK_BIT(IrqNum);
+	MaskReg = AIC_MASK_REG(IrqNum);
+	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
+	ULONG IrqState;
+	switch (AicInfo->AicVersion) {
+	case APPLE_INTERRUPT_CONTROLLER_V1:
+		IrqState = READ_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicHwStateOffset + MaskReg);
+		break;
+	case APPLE_INTERRUPT_CONTROLLER_V2:
+	case APPLE_INTERRUPT_CONTROLLER_V3:
+		//
+		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
+		//
+		IrqState = READ_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicHwStateOffset + CpuDieOffset + MaskReg);
+		break;
+	}
+	return (((IrqState) & MaskBit) != 0);
+}
+
+NTSTATUS AppleInterruptControllerUnmaskInterrupt(PVOID InterruptControllerContext, ULONG IrqNum) {
+	ULONG CpuDieOffset;
+	UINT32 MaskBit;
+	UINT32 MaskReg;
+	CpuDieOffset = 0;
+	MaskBit = AIC_MASK_BIT(IrqNum);
+	MaskReg = AIC_MASK_REG(IrqNum);
+	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
+	switch (AicInfo->AicVersion) {
+	case APPLE_INTERRUPT_CONTROLLER_V1:
+		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicIrqMaskClearOffset + MaskReg, MaskBit);
+		break;
+	case APPLE_INTERRUPT_CONTROLLER_V2:
+	case APPLE_INTERRUPT_CONTROLLER_V3:
+		//
+		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
+		//
+		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicIrqMaskClearOffset + CpuDieOffset + MaskReg, MaskBit);
+		break;
+	}
+	return STATUS_SUCCESS;
+}
 
 //
 // The parameters here have yet to be RE'd, just use a stub for now for anything that isn't immediately obvious.
@@ -80,6 +176,10 @@ NTSTATUS AppleInterruptControllerInitializeLocalUnit(PVOID InterruptControllerCo
 	UNREFERENCED_PARAMETER(Param4);
 	UNREFERENCED_PARAMETER(Aff0);
 	return STATUS_SUCCESS;
+}
+
+BOOLEAN AppleInterruptControllerIsSpecialInterrupt(ULONG InterruptLineNumber) {
+	return (InterruptLineNumber >= 0xFFFFF000);
 }
 
 //
@@ -145,7 +245,7 @@ NTSTATUS AppleInterruptControllerDescribeLines(P_AIC_INFO pAicInfo) {
 	IrqLineInitBlock.MsiData = 0;
 	Status = HalpInterruptRegisterLine(&IrqLineInitBlock);
 	if (Status != STATUS_SUCCESS) {
-		goto Exit;
+		return Status;
 	}
 
 	//
@@ -164,7 +264,7 @@ NTSTATUS AppleInterruptControllerDescribeLines(P_AIC_INFO pAicInfo) {
 	IrqLineInitBlock.MsiData = 0;
 	Status = HalpInterruptRegisterLine(&IrqLineInitBlock);
 	if (Status != STATUS_SUCCESS) {
-		goto Exit;
+		return Status;
 	}
 
 	//
@@ -186,7 +286,7 @@ NTSTATUS AppleInterruptControllerDescribeLines(P_AIC_INFO pAicInfo) {
 	IrqLineInitBlock.MsiData = 0;
 	Status = HalpInterruptRegisterLine(&IrqLineInitBlock);
 	if (Status != STATUS_SUCCESS) {
-		goto Exit;
+		return Status;
 	}
 
 	//
@@ -199,7 +299,7 @@ NTSTATUS AppleInterruptControllerDescribeLines(P_AIC_INFO pAicInfo) {
 	// since this doesn't line up with normal AIC numbering, we should probably use the sentinel for "not mapped to system interrupt numbers"
 	//
 	IrqLineInitBlock.GsiBase = 0xFFFFFFFF;
-	IrqLineInitBlock.MinLine = 0xFFFFF007; // 0xFFFFF001 is our IPI number.
+	IrqLineInitBlock.MinLine = 0xFFFFF007; // 0xFFFFF007 is our IPI number.
 	IrqLineInitBlock.MaxLine = 0xFFFFF007 + 1; // this is just for representational purposes, to indicate that 0xFFFFF007 is the last line being registered (Windows wants MaxLine to be last line number + 1)
 	// This is *probably* safe - we are only registering one AIC here in all scenarios at the moment. 
 	// If we do register other controllers, this will have to change.
@@ -207,11 +307,27 @@ NTSTATUS AppleInterruptControllerDescribeLines(P_AIC_INFO pAicInfo) {
 	IrqLineInitBlock.MsiAddress = 0;
 	IrqLineInitBlock.MsiData = 0;
 	Status = HalpInterruptRegisterLine(&IrqLineInitBlock);
-	if (Status != STATUS_SUCCESS) {
-		goto Exit;
+	return Status;
+}
+
+NTSTATUS AppleInterruptControllerEnsureIoUnitMapped(P_AIC_INFO pAicInfo) {
+	//
+	// Check if the virtual address entry for the AIC is NULL or not.
+	//
+	NTSTATUS Status = STATUS_SUCCESS;
+	if (pAicInfo->AppleInterruptControllerBaseVirt == NULL) {
+		//
+		// Attempt to map the AIC into virtual address space if the entry is NULL.
+		//
+		pAicInfo->AppleInterruptControllerBaseVirt = (volatile PULONG)HalMapIoSpace(AicInfo.AppleInterruptControllerBasePhys, CsrtAicData->ControllerVendorData.ControllerBaseSize, MmNonCached);
+		if (pAicInfo->AppleInterruptControllerBaseVirt == NULL) {
+			//
+			// we don't have any virtual memory left over for the allocation, fail appropriately.
+			//
+			Status = STATUS_INSUFFICIENT_RESOURCES;
+		}
 	}
-Exit:
-	return STATUS_SUCCESS;
+	return Status;
 }
 
 NTSTATUS AppleInterruptControllerInitializeIoUnit(PVOID InterruptControllerContext) {
@@ -221,11 +337,84 @@ NTSTATUS AppleInterruptControllerInitializeIoUnit(PVOID InterruptControllerConte
 	// In our case, we should only have the one IO unit, so we would probably follow the GICv3/BC2836 case here.
 	//
 	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
+	UINT32 AicV2Config;
+	NTSTATUS Status;
+
+	//
+	// Make sure the AIC is mapped in virtual address space.
+	//
+	Status = AppleInterruptControllerEnsureIoUnitMapped(AicInfo);
+
+	if (Status != STATUS_SUCCESS) {
+		//
+		// do not proceed further if we can't map the AIC.
+		//
+		DbgPrint("AppleInterruptControllerInitializeIoUnit: [ERR] AIC is not mapped!\n");
+		return Status;
+	}
+
+	if (AicInfo->AicInitialized != FALSE) {
+		//
+		// do not attempt to initialize twice.
+		//
+		DbgPrint("AppleInterruptControllerInitializeIoUnit: [INF] AIC is already initialized.\n");
+		return STATUS_SUCCESS;
+	}
+
+	//
+	// Check if AIC was inadvertently left enabled from UEFI (AICv2 only, AICv1 won't have this bit) and if it was,
+	// disable it for now.
+	// (We require this check because we enable AIC in our UEFI just in case we need it.)
+	//
+	if ((AicInfo->AicVersion >= APPLE_INTERRUPT_CONTROLLER_V2)) {
+		AicV2Config = READ_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AIC_V2_CONFIG);
+		if (AicV2Config & AIC_V2_CFG_ENABLE != 0) {
+			AicV2Config &= ~(AIC_V2_CFG_ENABLE);
+			_DataSynchronizationBarrier(); // "dsb sy"
+			MemoryBarrier(); // this is a "dmb"
+			_InstructionSynchronizationBarrier(); // "isb sy"
+			WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AIC_V2_CONFIG, AicV2Config);
+			_InstructionSynchronizationBarrier(); // "isb sy"
+			_DataSynchronizationBarrier(); // "dsb sy"
+		}
+	}
+
+	//
+	// Mask all the IRQs.
+	//
+	for (ULONG InterruptNum = 0; InterruptNum < AicInfo->AicNumIrqs; InterruptNum++) {
+		AppleInterruptControllerMaskInterrupt(InterruptControllerContext, InterruptNum);
+	}
 
 	//
 	// Register the IRQ lines being used with the HAL.
 	//
-	AppleInterruptControllerDescribeLines(AicInfo);
+	Status = AppleInterruptControllerDescribeLines(AicInfo);
+
+	if (Status != STATUS_SUCCESS) {
+		DbgPrint("AppleInterruptControllerInitializeIoUnit: [ERR] Failed to register IRQ lines!\n");
+		return Status;
+	}
+
+	//
+	// Initialization is done, mark ourselves as initialized in the AicInfo structure.
+	//
+	AicInfo->AicInitialized = TRUE;
+	//
+	// For AICv2 platforms, re-enable the AIC.
+	//
+	if ((AicInfo->AicVersion >= APPLE_INTERRUPT_CONTROLLER_V2)) {
+		AicV2Config = READ_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AIC_V2_CONFIG);
+		if (AicV2Config & AIC_V2_CFG_ENABLE == 0) {
+			AicV2Config |= (AIC_V2_CFG_ENABLE);
+			_DataSynchronizationBarrier(); // "dsb sy"
+			MemoryBarrier(); // this is a "dmb"
+			_InstructionSynchronizationBarrier(); // "isb sy"
+			WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AIC_V2_CONFIG, AicV2Config);
+			_InstructionSynchronizationBarrier(); // "isb sy"
+			_DataSynchronizationBarrier(); // "dsb sy"
+		}
+	}
 	return STATUS_SUCCESS;
 }
 
@@ -293,7 +482,6 @@ VOID AppleInterruptControllerEndOfInterrupt(PVOID InterruptControllerContext, UL
 	// For FIQs, we need to manually acknowledge and mask them ourselves. We might have to check for all the FIQ sources first, then
 	// check if it's an IRQ if it's not an FIQ source.
 	//
-	UNREFERENCED_PARAMETER(InterruptControllerContext);
 	UNREFERENCED_PARAMETER(IrqNum);
 	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
 	ULONG AicEvent;
@@ -316,26 +504,6 @@ NTSTATUS AppleInterruptControllerSetLineState(PVOID InterruptControllerContext, 
 	return STATUS_SUCCESS;
 }
 
-NTSTATUS AppleInterruptControllerUnmaskInterrupt(PVOID InterruptControllerContext, ULONG IrqNum) {
-	ULONG CpuDieOffset;
-	UINT32 MaskBit;
-	CpuDieOffset = 0;
-	MaskBit = AIC_MASK_BIT(IrqNum);
-	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
-	switch (AicInfo->AicVersion) {
-	case APPLE_INTERRUPT_CONTROLLER_V1:
-		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicIrqMaskClearOffset + MaskBit, MaskBit);
-		break;
-	case APPLE_INTERRUPT_CONTROLLER_V2:
-	case APPLE_INTERRUPT_CONTROLLER_V3:
-		//
-		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
-		//
-		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicIrqMaskClearOffset + CpuDieOffset + MaskBit, MaskBit);
-		break;
-	}
-}
-
 NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerContext, INTERRUPT_LINE *IrqLine, INTERRUPT_TARGET *IrqTarget, ULONG Param4, INTERRUPT_LINE *IrqLine2) {
 	//
 	// The request interrupt function is what handles actually configuring the interrupt hardware to unmask and mask interrupts, 
@@ -350,8 +518,61 @@ NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerConte
 	// (per the GIC state machine, this marks an interrupt as pending )
 	// - if it's requesting an extended SPI, it sets the bit for the interrupt in GICD_ISPENDR<x>E, depending on the SPI number
 	// - If it's an LPI, either sends an ITS command if that's used, otherwise directly signals the redistributor by writing GICR_SETLPIR
-	// - if it's a SPI (an IPI in other words), it writes ICC_SGI1R_EL1 with the right value to the right target dependent on IrqTarget
+	// - if it's an SGI (an IPI in other words), it writes ICC_SGI1R_EL1 with the right value to the right target dependent on IrqTarget/
+	// 
+	// The general gist here is that through whatever mechanism it has, the GICv3 state machine is transitioning an interrupt from inactive
+	// (not being asserted) to pending (asserted, might not be serviced immediately due to priority, and unacknowledged).
+	// 
+	// For AIC, we have two paths to account for in this regard.
+	// - For IRQs, the AIC has a mechanism for software to assert an interrupt (the SW_SET/SW_CLR registers), so this slots in pretty well for
+	// most interrupts.
+	// - For FIQs and special interrupts, we'll need to take special paths depending on the interrupt. (The timer is handled by the Windows HAL itself
+	// due to being register-compatible with the ARM64 generic timer so again we do not need to handle it here.) IPIs seem to be the main concern here.
 	//
+
+	UINT32 Line = (UINT32)IrqLine->Line;
+	BOOLEAN IsSpecialInterrupt = AppleInterruptControllerIsSpecialInterrupt(Line);
+	BOOLEAN IsIpi = TRUE; // assume that if we are a special interrupt, we are an IPI to start out with.
+	if (IsSpecialInterrupt == TRUE) {
+		//
+		// We are requesting an FIQ or IPI. Handle multiple cases here.
+		// NOTE: we do *not* handle the ARM64 timer, Windows manages that itself, so basically we just manage PMC counters and IPIs.
+		// (PMC counters not implemented yet as right now we are using emulation of normal PMUv3 registers via m1n1, 
+		// PMUv3 counters are handled by Windows itself similar to timers.)
+		//
+
+		//
+		// AIC IPIs, how they work, and how our driver differs from the Linux driver:
+		// - AIC-based devices have two known ways to receive and generate IPIs: "slow" IPIs configured via registers on AIC,
+		// and "fast" IPIs configured via MSRs on the core. (Additionally, since the M1, there's a new extension which allows even faster IPIs via MSRs within the same cluster)
+		// - If using AIC-backed IPIs, the requesting CPU writes to a register (Asahi Linux calls this IPI_SEND, on AICv1 offset is 0x2008) where the bit(s) written
+		// affect(s) which cores receive an IPI. Writing bits [30:0] will send an IPI to that CPU index as an "other" IPI, while writing bit 31 sends an IPI to the current CPU as a "self" IPI.
+		// - The Linux driver only uses one of the IPI vectors (the "other" vector) and has a virtual IPI controller in front of the physical hardware.
+		// We will *not* be using this approach, currently the goal is to see if we can naively use the primitives Apple uses.
+		// - If using Fast IPIs, you target a CPU based on it's MPIDR CPU/cluster value (or just CPU if you're targeting in the same cluster) and write that to the system register.
+		// (In the Fast IPI case, targeting "self" is targeting an IPI against your own MPIDR value for core/cluster)
+		// 
+		// We are not going to be using a vIPI approach, and instead relying on Apple's own primitives being sufficient for now. We will support targeting
+		// self only, all including/excluding self, and a physical CPU (we are not using logical flat or clustered modes, those depend on local unit support which we are not assuming right now.)
+		//
+
+		//
+		// TODO: This switch statement.
+		//
+		switch (IrqTarget->Target) {
+			case InterruptTargetSelfOnly:
+			case InterruptTargetAllExcludingSelf:
+			case InterruptTargetAllIncludingSelf:
+			case InterruptTargetPhysical:
+			default:
+		}
+
+	}
+	else {
+		//
+		// We are requesting a normal AIC IRQ, take the line number and write the corresponding SW_SET bit.
+		//
+	}
 
 	//
 	// Right now we're a stub, but the control flow should be something like this:
@@ -431,25 +652,6 @@ NTSTATUS AppleInterruptControllerDeinitializeIoUnit(PVOID InterruptControllerCon
 //	return InterruptResultNone;
 //}
 
-NTSTATUS AppleInterruptControllerMaskInterrupt(PVOID InterruptControllerContext, ULONG IrqNum) {
-	ULONG CpuDieOffset;
-	UINT32 MaskBit;
-	CpuDieOffset = 0;
-	MaskBit = AIC_MASK_BIT(IrqNum);
-	switch (gAicVersion) {
-	case APPLE_INTERRUPT_CONTROLLER_V1:
-		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + MaskBit, MaskBit);
-		break;
-	case APPLE_INTERRUPT_CONTROLLER_V2:
-	case APPLE_INTERRUPT_CONTROLLER_V3:
-		//
-		// TODO: this. (divide by max IRQs then multiply by die stride to get the right offset for IRQs that originate on the other CPU die.)
-		//
-		WRITE_REGISTER_ULONG(gAppleInterruptControllerBase + gAicMaskSetOffset + CpuDieOffset + MaskBit, MaskBit);
-		break;
-	}
-}
-
 VOID AppleInterruptControllerDeactivateInterrupt(PVOID InterruptControllerContext, ULONG IrqNum) {
 	//
 	// "Deactivate" here means that the interrupt is acknowledged such that it can be taken
@@ -528,7 +730,7 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER
 	// - store the function pointer to HalpInterruptRegisterController, then call it.
 	//
 	UINT64 KernelExceptionHandler;
-	UINT64 AicVirtualAddress;
+	volatile PULONG AicVirtualAddress;
 	RD_INTERRUPT_CONTROLLER* CsrtAicData = (RD_INTERRUPT_CONTROLLER*)CsrtResourceDescriptor;
 	//
 	// This is the Windows standard structure required for all interrupt controllers before being registered with
@@ -564,7 +766,13 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER
 	//
 	// Temporarily map the AIC to get the values we need, then unmap it once we're done (to not interfere with normal HAL operation)
 	//
-	AicVirtualAddress = ((UINT64)(HalMapIoSpace(AicInfo.AppleInterruptControllerBasePhys, CsrtAicData->ControllerVendorData.ControllerBaseSize, MmNonCached)));
+	AicVirtualAddress = ((volatile PULONG)(HalMapIoSpace(AicInfo.AppleInterruptControllerBasePhys, CsrtAicData->ControllerVendorData.ControllerBaseSize, MmNonCached)));
+	if (AicVirtualAddress == NULL) {
+		//
+		// we can't continue if we can't map the AIC.
+		//
+		ASSERTMSG("AppleInterruptControllerRegisterIoUnit: Failed to map AIC to virtual address!", FALSE);
+	}
 
 	switch (AicInfo.AicVersion) {
 	case APPLE_INTERRUPT_CONTROLLER_V1:
@@ -576,7 +784,7 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER
 		AicInfo.AicMaxIrqs = (READ_REGISTER_ULONG(AicVirtualAddress + AIC_V2_INFO_REG3) & AIC_NUM_IRQ_MASK);
 		break;
 	default:
-		ASSERTMSG("Failed to get number of AIC interrupts!", FALSE);
+		ASSERTMSG("AppleInterruptControllerRegisterIoUnit: Failed to get number of AIC interrupts!", FALSE);
 	}
 
 	HalUnmapIoSpace((PVOID)AicVirtualAddress, CsrtAicData->ControllerVendorData.ControllerBaseSize);
@@ -617,7 +825,7 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER
 	// (this fact is pretty definite, but we might want to fake priorities later on using a in-built list, so this could be set later)
 	// - IRQ controller as a consequence of no local units, does not support logical flat or clustered modes (bit 2/3 clear)
 	// - we will set bits [6:4] for now to have the same IPI behavior as GIC does. (AIC supports those by equivalence)
-	// - IRQ controller can mask IRQs without 
+	// - IRQ controller can mask IRQs without needing to disable interrupts. (bit 9 clear)
 	// (Capability bitmask = 0x70 for now for this)
 	//
 	AicInitBlock.Capabilities = (INTERRUPT_CONTROLLER_IPI_CONTROL_MASK);
@@ -664,8 +872,8 @@ NTSTATUS AddResourceGroup(ULONG Handle, PCSRT_RESOURCE_GROUP_HEADER CsrtResource
 	CsrtResourceDescriptor = GetNextResourceDescriptor(Handle, CsrtResourceGroup, CsrtResourceDescriptor, CSRT_RD_TYPE_INTERRUPT, CSRT_RD_SUBTYPE_INTERRUPT_CONTROLLER, CSRT_RD_UID_ANY);
 
 	if (ResourceDescriptor == NULL) {
-		ASSERTMSG("CSRT resource descriptor for AIC is NULL!", FALSE);
+		ASSERTMSG("AddResourceGroup: CSRT resource descriptor for AIC is NULL!", FALSE);
 	}
 
-	AppleInterruptControllerRegisterIoUnit(CsrtResourceDescriptor);
+	return AppleInterruptControllerRegisterIoUnit(CsrtResourceDescriptor);
 }

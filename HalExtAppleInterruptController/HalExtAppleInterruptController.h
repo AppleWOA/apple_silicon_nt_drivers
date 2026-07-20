@@ -41,6 +41,12 @@
 
 
 //
+// The maximum number of cores known on an Apple silicon platform. (This would correspond to the two die configuration of most
+// Pro series chips)
+//
+#define MAX_KNOWN_CPUS 32
+
+//
 // AIC version enum, used to track the version of AIC on the current platform.
 //
 
@@ -190,7 +196,26 @@ typedef struct _AIC_INFO {
 	//
 	BOOLEAN AicInitialized;
 
+	//
+	// A boolean indicating whether we should use Fast IPIs or not on devices that support this. Set the value based on SoC Chip ID
+	// (We always use Fast IPIs on devices that support it, only using AIC-based IPIs on devices that don't.)
+	//
+	BOOLEAN AicUseFastIpis;
+
+	//
+	// A copy of the handle that the kernel passes all HAL Extensions. Needed in some places, chiefly to get ACPI tables.
+	//
+	ULONG HalExtHandle;
+
+	//
+	// MPIDR values, ordered by processor index (Our ordering should match the ADT here to avoid issues...)
+	//
+	UINT64 Mpidrs[MAX_KNOWN_CPUS];
 } AIC_INFO, *P_AIC_INFO;
+
+//
+// This struct must always be in sync with it's counterpart in the UEFI implementation!
+//
 
 typedef struct
 {
@@ -200,6 +225,7 @@ typedef struct
 	ULONG ControllerBaseSize;
 	ULONG NumIrqs;
 	ULONG MaxIrqs;
+	ULONG ChipId; // Chip ID of the SoC we're running on - required for determining IPI support.
 } INTERRUPT_CONTROLLER_VENDOR_DATA;
 
 typedef struct
@@ -423,7 +449,7 @@ typedef struct _INTERRUPT_FUNCTION_TABLE {
 
 
 //
-// This defintiion is extrapolated based on reversing the 26100 kernel + the timer initialization block's definition in nthalext.h.
+// This defintion is extrapolated based on reversing the 26100 kernel + the timer initialization block's definition in nthalext.h.
 //
 typedef struct _INTERRUPT_INITIALIZATION_BLOCK {
 	SOC_INITIALIZATION_HEADER Header; // 0x0

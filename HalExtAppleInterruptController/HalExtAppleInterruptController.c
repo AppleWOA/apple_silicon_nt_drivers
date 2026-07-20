@@ -529,10 +529,12 @@ NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerConte
 	// - For FIQs and special interrupts, we'll need to take special paths depending on the interrupt. (The timer is handled by the Windows HAL itself
 	// due to being register-compatible with the ARM64 generic timer so again we do not need to handle it here.) IPIs seem to be the main concern here.
 	//
-
+	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
 	UINT32 Line = (UINT32)IrqLine->Line;
 	BOOLEAN IsSpecialInterrupt = AppleInterruptControllerIsSpecialInterrupt(Line);
 	BOOLEAN IsIpi = TRUE; // assume that if we are a special interrupt, we are an IPI to start out with.
+	ULONG CurrentProcessorNumber = KeGetCurrentProcessorNumberEx(NULL);
+	ULONGLONG CurrentProcessorMpidr = AicInfo->Mpidrs[CurrentProcessorNumber];
 	if (IsSpecialInterrupt == TRUE) {
 		//
 		// We are requesting an FIQ or IPI. Handle multiple cases here.
@@ -553,19 +555,37 @@ NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerConte
 		// (In the Fast IPI case, targeting "self" is targeting an IPI against your own MPIDR value for core/cluster)
 		// 
 		// We are not going to be using a vIPI approach, and instead relying on Apple's own primitives being sufficient for now. We will support targeting
-		// self only, all including/excluding self, and a physical CPU (we are not using logical flat or clustered modes, those depend on local unit support which we are not assuming right now.)
+		// self only, all including/excluding self, and a physical CPU (we are not using logical flat or clustered modes, 
+		// those depend on local unit support which we are not assuming right now.)
 		//
 
 		//
 		// TODO: This switch statement.
 		//
-		switch (IrqTarget->Target) {
+
+		//
+		// TODO: slow IPI support
+		//
+		
+		if (AicInfo->AicUseFastIpis) {
+			switch (IrqTarget->Target) {
 			case InterruptTargetSelfOnly:
+				//
+				// For Fast IPIs, addressing "self" means writing the right CPU number value to the MPIDR register relative to the current cluster.
+				// 
+				//
+				_WriteStatusReg(ARM64_SYSREG(3, 5, 15, 0, 0), )
+
 			case InterruptTargetAllExcludingSelf:
 			case InterruptTargetAllIncludingSelf:
 			case InterruptTargetPhysical:
 			default:
+			}
 		}
+		else {
+			ASSERTMSG("Only Fast IPIs are currently supported in the driver!");
+		}
+
 
 	}
 	else {
@@ -721,7 +741,7 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable = {
 //   Registers the AIC with the HAL itself. Needs to call into HalpInterruptRegisterController
 //   which isn't part of the exported HAL Extensions API so we need to find that function ourselves.
 // 
-NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER CsrtResourceDescriptor) {
+NTSTATUS AppleInterruptControllerRegisterIoUnit(ULONG Handle, PCSRT_RESOURCE_DESCRIPTOR_HEADER CsrtResourceDescriptor) {
 
 	//
 	// TODO: literally everything, including the following:
@@ -732,6 +752,14 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER
 	UINT64 KernelExceptionHandler;
 	volatile PULONG AicVirtualAddress;
 	RD_INTERRUPT_CONTROLLER* CsrtAicData = (RD_INTERRUPT_CONTROLLER*)CsrtResourceDescriptor;
+
+	//
+	// Read the MADT ACPI table
+	//
+	PMAPIC MadtTable;
+	MadtTable = GetAcpiTable(AicInfo->HalExtHandle, MADT_SIGNATURE, NULL, NULL);
+	PPROCLOCALGIC GicLocalInformation = MadtTable->APICTables;
+		
 	//
 	// This is the Windows standard structure required for all interrupt controllers before being registered with
 	// the HAL.
@@ -794,7 +822,7 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER
 	// only work on 26100.1 until we develop better patch-find routines)
 	// apply the offset to get to HalpInterruptRegisterController
 	//
-	KernelExceptionHandler = _ReadSystemReg(ARM64_SYSREG(3, 0, 12, 0, 0)); // read VBAR_EL1
+	KernelExceptionHandler = _ReadStatusReg(ARM64_SYSREG(3, 0, 12, 0, 0)); // read VBAR_EL1
 	HalpInterruptRegisterController = (PVOID)((UINT64)((KernelExceptionHandler - 0x19BD20))); // this mess of typecasts is so that the inner expression is a UINT64, *then* cast to pointer...
 
 	//
@@ -809,6 +837,19 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER
 	// with a stride distance used to access the interrupt state of other dies.)
 	//
 	AicInitBlock.UnitId = 0;
+
+	//
+	// For now, assume any device we are running on supports Fast IPIs.
+	// This *will* need to change later but for now it serves as a way to speed up development.
+	//
+	AicInitBlock.AicUseFastIpis = TRUE;
+
+	//
+	// HACK: currently to keep our config sane and to get it to build, limit the MPIDR accesses to lowest
+	// common number of cores on all M-series chips (8 cores)
+	for (ULONG Index = 0; Index < 8; Index++) {
+		AicInitBlock.Mpidrs[Index] = GicLocalInformation[Index];
+	}
 
 	//
 	// Mark our interrupt controller type as unknown. 
@@ -829,6 +870,8 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(PCSRT_RESOURCE_DESCRIPTOR_HEADER
 	// (Capability bitmask = 0x70 for now for this)
 	//
 	AicInitBlock.Capabilities = (INTERRUPT_CONTROLLER_IPI_CONTROL_MASK);
+
+	AicInitBlock.HalExtHandle = Handle;
 
 	//
 	// Register the AIC MMIO addresses with the HAL.
@@ -871,9 +914,9 @@ NTSTATUS AddResourceGroup(ULONG Handle, PCSRT_RESOURCE_GROUP_HEADER CsrtResource
 	//
 	CsrtResourceDescriptor = GetNextResourceDescriptor(Handle, CsrtResourceGroup, CsrtResourceDescriptor, CSRT_RD_TYPE_INTERRUPT, CSRT_RD_SUBTYPE_INTERRUPT_CONTROLLER, CSRT_RD_UID_ANY);
 
-	if (ResourceDescriptor == NULL) {
+	if (CsrtResourceDescriptor == NULL) {
 		ASSERTMSG("AddResourceGroup: CSRT resource descriptor for AIC is NULL!", FALSE);
 	}
 
-	return AppleInterruptControllerRegisterIoUnit(CsrtResourceDescriptor);
+	return AppleInterruptControllerRegisterIoUnit(Handle, CsrtResourceDescriptor);
 }

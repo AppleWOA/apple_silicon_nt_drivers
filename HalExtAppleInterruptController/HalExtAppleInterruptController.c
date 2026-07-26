@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2025, AppleWOA authors.
+ * Copyright (c) 2025, NTASP authors.
  *
  * Module Name:
  *     HalExtAppleInterruptController.c
@@ -12,10 +12,11 @@
  *     NT kernel mode.
  *
  * License:
- *     SPDX-License-Identifier: (BSD-2-Clause-Patent OR MIT)
+ *     SPDX-License-Identifier: (BSD-2-Clause-Patent OR MIT) AND GPL-2.0
 */
 
 #include <nthalext.h>
+#include <intrin.h>
 
 //
 // The sample DMA controller HAL Extension disables these warnings. Original descriptions below.
@@ -25,8 +26,11 @@
 // Disable warning C4115: named type definition in parentheses
 // Disable warning C4127: conditional expression is constant
 // Disable warning C4200: zero-sized array in struct/union
+// 
+// The following warnings are newly disabled in the AIC HAL Extension's current implementation.
+// Disable warning C4152: non standard extension, function/data ptr conversion in expression
 //
-#pragma warning(disable:4214 4201 4115 4127 4200)
+#pragma warning(disable:4214 4201 4115 4127 4200 4152)
 
 #include "HalExtAppleInterruptController.h"
 
@@ -68,14 +72,15 @@
 // in our implementation.
 //
 
-NTSTATUS AppleInterruptControllerMaskInterrupt(PVOID InterruptControllerContext, ULONG IrqNum) {
+static inline NTSTATUS AppleInterruptControllerMaskInterrupt(PVOID InterruptControllerContext, ULONG IrqNum) {
 	ULONG CpuDieOffset;
 	UINT32 MaskBit;
 	UINT32 MaskReg;
+	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
 	CpuDieOffset = 0;
 	MaskBit = AIC_MASK_BIT(IrqNum);
 	MaskReg = AIC_MASK_REG(IrqNum);
-	switch (gAicVersion) {
+	switch (AicInfo->AicVersion) {
 	case APPLE_INTERRUPT_CONTROLLER_V1:
 		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicIrqMaskClearOffset + MaskReg, MaskBit);
 		break;
@@ -90,14 +95,15 @@ NTSTATUS AppleInterruptControllerMaskInterrupt(PVOID InterruptControllerContext,
 	return STATUS_SUCCESS;
 }
 
-inline NTSTATUS AppleInterruptControllerMarkInterruptAsPending(PVOID InterruptControllerContext, ULONG IrqNum) {
+static inline NTSTATUS AppleInterruptControllerMarkInterruptAsPending(PVOID InterruptControllerContext, ULONG IrqNum) {
 	ULONG CpuDieOffset;
 	UINT32 MaskBit;
 	UINT32 MaskReg;
 	CpuDieOffset = 0;
 	MaskBit = AIC_MASK_BIT(IrqNum);
 	MaskReg = AIC_MASK_REG(IrqNum);
-	switch (gAicVersion) {
+	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
+	switch (AicInfo->AicVersion) {
 	case APPLE_INTERRUPT_CONTROLLER_V1:
 		WRITE_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AicInfo->AicSwIrqMaskSetOffset + MaskReg, MaskBit);
 		break;
@@ -194,7 +200,7 @@ NTSTATUS AppleInterruptControllerDescribeLines(P_AIC_INFO pAicInfo) {
 	UINT64 KernelExceptionHandler;
 	NTSTATUS Status;
 	NTSTATUS (*HalpInterruptRegisterLine)(PINTERRUPT_LINE_INITIALIZATION_BLOCK InterruptLine);
-	KernelExceptionHandler = _ReadSystemReg(ARM64_SYSREG(3, 0, 12, 0, 0)); // read VBAR_EL1
+	KernelExceptionHandler = _ReadStatusReg(ARM64_SYSREG(3, 0, 12, 0, 0)); // read VBAR_EL1
 	HalpInterruptRegisterLine = (PVOID)((UINT64)(KernelExceptionHandler - 0x19B930));
 
 	//
@@ -319,7 +325,7 @@ NTSTATUS AppleInterruptControllerEnsureIoUnitMapped(P_AIC_INFO pAicInfo) {
 		//
 		// Attempt to map the AIC into virtual address space if the entry is NULL.
 		//
-		pAicInfo->AppleInterruptControllerBaseVirt = (volatile PULONG)HalMapIoSpace(AicInfo.AppleInterruptControllerBasePhys, CsrtAicData->ControllerVendorData.ControllerBaseSize, MmNonCached);
+		pAicInfo->AppleInterruptControllerBaseVirt = HalMapIoSpace(pAicInfo->AppleInterruptControllerBasePhys, pAicInfo->AppleInterruptControllerSize, MmNonCached);
 		if (pAicInfo->AppleInterruptControllerBaseVirt == NULL) {
 			//
 			// we don't have any virtual memory left over for the allocation, fail appropriately.
@@ -338,6 +344,7 @@ NTSTATUS AppleInterruptControllerInitializeIoUnit(PVOID InterruptControllerConte
 	//
 	P_AIC_INFO AicInfo = (P_AIC_INFO)InterruptControllerContext;
 	UINT32 AicV2Config;
+	BOOLEAN IsAicEnabled;
 	NTSTATUS Status;
 
 	//
@@ -365,10 +372,12 @@ NTSTATUS AppleInterruptControllerInitializeIoUnit(PVOID InterruptControllerConte
 	// Check if AIC was inadvertently left enabled from UEFI (AICv2 only, AICv1 won't have this bit) and if it was,
 	// disable it for now.
 	// (We require this check because we enable AIC in our UEFI just in case we need it.)
+	// (This should not be the case since we disable AIC in our ExitBootServices callback)
 	//
 	if ((AicInfo->AicVersion >= APPLE_INTERRUPT_CONTROLLER_V2)) {
 		AicV2Config = READ_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AIC_V2_CONFIG);
-		if (AicV2Config & AIC_V2_CFG_ENABLE != 0) {
+		IsAicEnabled = ((AicV2Config) & (AIC_V2_CFG_ENABLE)) != 0;
+		if (IsAicEnabled) {
 			AicV2Config &= ~(AIC_V2_CFG_ENABLE);
 			_DataSynchronizationBarrier(); // "dsb sy"
 			MemoryBarrier(); // this is a "dmb"
@@ -401,11 +410,12 @@ NTSTATUS AppleInterruptControllerInitializeIoUnit(PVOID InterruptControllerConte
 	//
 	AicInfo->AicInitialized = TRUE;
 	//
-	// For AICv2 platforms, re-enable the AIC.
+	// For AICv2 platforms, (re-)enable the AIC.
 	//
 	if ((AicInfo->AicVersion >= APPLE_INTERRUPT_CONTROLLER_V2)) {
 		AicV2Config = READ_REGISTER_ULONG(AicInfo->AppleInterruptControllerBaseVirt + AIC_V2_CONFIG);
-		if (AicV2Config & AIC_V2_CFG_ENABLE == 0) {
+		IsAicEnabled = ((AicV2Config) & (AIC_V2_CFG_ENABLE)) != 0;
+		if (!IsAicEnabled) {
 			AicV2Config |= (AIC_V2_CFG_ENABLE);
 			_DataSynchronizationBarrier(); // "dsb sy"
 			MemoryBarrier(); // this is a "dmb"
@@ -458,7 +468,7 @@ NTSTATUS AppleInterruptControllerSetLogicalId(PVOID InterruptControllerContext, 
 	return STATUS_SUCCESS;
 }
 
-INTERRUPT_RESULT AppleInterruptControllerAcceptAndGetSource(PVOID InterruptControllerContext, PINT32 IrqId, PULONG IrqEventValue) {
+INTERRUPT_RESULT AppleInterruptControllerAcceptAndGetSource(PVOID InterruptControllerContext, PLONG IrqId, PULONG IrqEventValue) {
 	//
 	// The GICv3 driver does an interrupt acknowledge, then writes the IRQ ID and the full event value to IrqId and IrqEventValue
 	// respectively. In our case, we will read from the event register, then write it's full value to IrqEventValue, with the extracted
@@ -535,6 +545,10 @@ NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerConte
 	BOOLEAN IsIpi = TRUE; // assume that if we are a special interrupt, we are an IPI to start out with.
 	ULONG CurrentProcessorNumber = KeGetCurrentProcessorNumberEx(NULL);
 	ULONGLONG CurrentProcessorMpidr = AicInfo->Mpidrs[CurrentProcessorNumber];
+
+	UNREFERENCED_PARAMETER(IrqLine);
+	UNREFERENCED_PARAMETER(Param4);
+	UNREFERENCED_PARAMETER(IrqLine2);
 	if (IsSpecialInterrupt == TRUE) {
 		//
 		// We are requesting an FIQ or IPI. Handle multiple cases here.
@@ -542,49 +556,53 @@ NTSTATUS AppleInterruptControllerRequestInterrupt(PVOID InterruptControllerConte
 		// (PMC counters not implemented yet as right now we are using emulation of normal PMUv3 registers via m1n1, 
 		// PMUv3 counters are handled by Windows itself similar to timers.)
 		//
+		if (IsIpi) {
+			//
+			// AIC IPIs, how they work, and how our driver differs from the Linux driver:
+			// - AIC-based devices have two known ways to receive and generate IPIs: "slow" IPIs configured via registers on AIC,
+			// and "fast" IPIs configured via MSRs on the core. (Additionally, since the M1, there's a new extension which allows even faster IPIs via MSRs within the same cluster)
+			// - If using AIC-backed IPIs, the requesting CPU writes to a register (Asahi Linux calls this IPI_SEND, on AICv1 offset is 0x2008) where the bit(s) written
+			// affect(s) which cores receive an IPI. Writing bits [30:0] will send an IPI to that CPU index as an "other" IPI, while writing bit 31 sends an IPI to the current CPU as a "self" IPI.
+			// - The Linux driver only uses one of the IPI vectors (the "other" vector) and has a virtual IPI controller in front of the physical hardware.
+			// We will *not* be using this approach, currently the goal is to see if we can naively use the primitives Apple uses.
+			// - If using Fast IPIs, you target a CPU based on it's MPIDR CPU/cluster value (or just CPU if you're targeting in the same cluster) and write that to the system register.
+			// (In the Fast IPI case, targeting "self" is targeting an IPI against your own MPIDR value for core/cluster)
+			// 
+			// We are not going to be using a vIPI approach, and instead relying on Apple's own primitives being sufficient for now. We will support targeting
+			// self only, all including/excluding self, and a physical CPU (we are not using logical flat or clustered modes, 
+			// those depend on local unit support which we are not assuming right now.)
+			//
 
-		//
-		// AIC IPIs, how they work, and how our driver differs from the Linux driver:
-		// - AIC-based devices have two known ways to receive and generate IPIs: "slow" IPIs configured via registers on AIC,
-		// and "fast" IPIs configured via MSRs on the core. (Additionally, since the M1, there's a new extension which allows even faster IPIs via MSRs within the same cluster)
-		// - If using AIC-backed IPIs, the requesting CPU writes to a register (Asahi Linux calls this IPI_SEND, on AICv1 offset is 0x2008) where the bit(s) written
-		// affect(s) which cores receive an IPI. Writing bits [30:0] will send an IPI to that CPU index as an "other" IPI, while writing bit 31 sends an IPI to the current CPU as a "self" IPI.
-		// - The Linux driver only uses one of the IPI vectors (the "other" vector) and has a virtual IPI controller in front of the physical hardware.
-		// We will *not* be using this approach, currently the goal is to see if we can naively use the primitives Apple uses.
-		// - If using Fast IPIs, you target a CPU based on it's MPIDR CPU/cluster value (or just CPU if you're targeting in the same cluster) and write that to the system register.
-		// (In the Fast IPI case, targeting "self" is targeting an IPI against your own MPIDR value for core/cluster)
-		// 
-		// We are not going to be using a vIPI approach, and instead relying on Apple's own primitives being sufficient for now. We will support targeting
-		// self only, all including/excluding self, and a physical CPU (we are not using logical flat or clustered modes, 
-		// those depend on local unit support which we are not assuming right now.)
-		//
+			//
+			// TODO: This switch statement.
+			//
 
-		//
-		// TODO: This switch statement.
-		//
+			//
+			// TODO: slow IPI support
+			//
 
-		//
-		// TODO: slow IPI support
-		//
-		
-		if (AicInfo->AicUseFastIpis) {
-			switch (IrqTarget->Target) {
-			case InterruptTargetSelfOnly:
-				//
-				// For Fast IPIs, addressing "self" means writing the right CPU number value to the MPIDR register relative to the current cluster.
-				// 
-				//
-				_WriteStatusReg(ARM64_SYSREG(3, 5, 15, 0, 0), )
+			if (AicInfo->AicUseFastIpis) {
+				switch (IrqTarget->Target) {
+				case InterruptTargetSelfOnly:
+					//
+					// For Fast IPIs, addressing "self" means writing the right CPU number value to the MPIDR register relative to the current cluster.
+					// 
+					//
+					_WriteStatusReg(ARM64_SYSREG(3, 5, 15, 0, 0), FIELD_PREP(IPI_RR_CPU, MPIDR_AFF0(CurrentProcessorMpidr)));
+					break;
 
-			case InterruptTargetAllExcludingSelf:
-			case InterruptTargetAllIncludingSelf:
-			case InterruptTargetPhysical:
-			default:
+				case InterruptTargetAllExcludingSelf:
+				case InterruptTargetAllIncludingSelf:
+				case InterruptTargetPhysical:
+				default:
+					ASSERTMSG("Unimplemented Interrupt target!", FALSE);
+				}
+			}
+			else {
+				ASSERTMSG("Only Fast IPIs are currently supported in the driver!", FALSE);
 			}
 		}
-		else {
-			ASSERTMSG("Only Fast IPIs are currently supported in the driver!");
-		}
+
 
 
 	}
@@ -680,7 +698,6 @@ VOID AppleInterruptControllerDeactivateInterrupt(PVOID InterruptControllerContex
 	//
 	UNREFERENCED_PARAMETER(InterruptControllerContext);
 	UNREFERENCED_PARAMETER(IrqNum);
-	return STATUS_SUCCESS;
 }
 
 VOID AppleInterruptControllerDirectedEndOfInterrupt(PVOID InterruptControllerContext, ULONG Param1, ULONG Param2) {
@@ -694,10 +711,20 @@ VOID AppleInterruptControllerDirectedEndOfInterrupt(PVOID InterruptControllerCon
 }
 
 NTSTATUS AppleInterruptControllerQueryLocalUnitInfo(PVOID InterruptControllerContext, ULONG Param1, PULONG Param2, PULONG Param3, KINTERRUPT_MODE* Param4, KINTERRUPT_MODE* Param5) {
+	UNREFERENCED_PARAMETER(InterruptControllerContext);
+	UNREFERENCED_PARAMETER(Param1);
+	UNREFERENCED_PARAMETER(Param2);
+	UNREFERENCED_PARAMETER(Param3);
+	UNREFERENCED_PARAMETER(Param4);
+	UNREFERENCED_PARAMETER(Param5);
 	return STATUS_SUCCESS;
 }
 
 NTSTATUS AppleInterruptControllerQueryPendingState(PVOID InterruptControllerContext, INTERRUPT_LINE* IrqLine, PUINT8 Param2, PUINT8 Param3) {
+	UNREFERENCED_PARAMETER(InterruptControllerContext);
+	UNREFERENCED_PARAMETER(IrqLine);
+	UNREFERENCED_PARAMETER(Param2);
+	UNREFERENCED_PARAMETER(Param3);
 	return STATUS_SUCCESS;
 }
 
@@ -711,7 +738,7 @@ INTERRUPT_FUNCTION_TABLE gAicFunctionTable = {
 	AppleInterruptControllerInitializeLocalUnit,
 	AppleInterruptControllerInitializeIoUnit,
 	AppleInterruptControllerSetPriority,
-	AppleInterruptControllerGetLocalUnitError,
+	NULL,
 	AppleInterruptControllerClearLocalUnitError,
 	AppleInterruptControllerGetLogicalId,
 	AppleInterruptControllerSetLogicalId,
@@ -750,6 +777,7 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(ULONG Handle, PCSRT_RESOURCE_DES
 	// - store the function pointer to HalpInterruptRegisterController, then call it.
 	//
 	UINT64 KernelExceptionHandler;
+	NTSTATUS Status;
 	volatile PULONG AicVirtualAddress;
 	RD_INTERRUPT_CONTROLLER* CsrtAicData = (RD_INTERRUPT_CONTROLLER*)CsrtResourceDescriptor;
 
@@ -757,8 +785,8 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(ULONG Handle, PCSRT_RESOURCE_DES
 	// Read the MADT ACPI table
 	//
 	PMAPIC MadtTable;
-	MadtTable = GetAcpiTable(AicInfo->HalExtHandle, MADT_SIGNATURE, NULL, NULL);
-	PPROCLOCALGIC GicLocalInformation = MadtTable->APICTables;
+	MadtTable = GetAcpiTable(Handle, MADT_SIGNATURE, NULL, NULL);
+	PPROCLOCALGIC GicLocalInformation = (PPROCLOCALGIC)MadtTable->APICTables;
 		
 	//
 	// This is the Windows standard structure required for all interrupt controllers before being registered with
@@ -794,7 +822,7 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(ULONG Handle, PCSRT_RESOURCE_DES
 	//
 	// Temporarily map the AIC to get the values we need, then unmap it once we're done (to not interfere with normal HAL operation)
 	//
-	AicVirtualAddress = ((volatile PULONG)(HalMapIoSpace(AicInfo.AppleInterruptControllerBasePhys, CsrtAicData->ControllerVendorData.ControllerBaseSize, MmNonCached)));
+	AicVirtualAddress = HalMapIoSpace(AicInfo.AppleInterruptControllerBasePhys, CsrtAicData->ControllerVendorData.ControllerBaseSize, MmNonCached);
 	if (AicVirtualAddress == NULL) {
 		//
 		// we can't continue if we can't map the AIC.
@@ -839,16 +867,15 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(ULONG Handle, PCSRT_RESOURCE_DES
 	AicInitBlock.UnitId = 0;
 
 	//
-	// For now, assume any device we are running on supports Fast IPIs.
-	// This *will* need to change later but for now it serves as a way to speed up development.
+	// The firmware vendor data will carry a boolean indicating whether Fast IPIs are supported on the platform.
 	//
-	AicInitBlock.AicUseFastIpis = TRUE;
+	AicInfo.AicUseFastIpis = CsrtAicData->ControllerVendorData.FastIpisSupported;
 
 	//
 	// HACK: currently to keep our config sane and to get it to build, limit the MPIDR accesses to lowest
 	// common number of cores on all M-series chips (8 cores)
 	for (ULONG Index = 0; Index < 8; Index++) {
-		AicInitBlock.Mpidrs[Index] = GicLocalInformation[Index];
+		AicInfo.Mpidrs[Index] = GicLocalInformation[Index].Mpidr;
 	}
 
 	//
@@ -871,19 +898,19 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(ULONG Handle, PCSRT_RESOURCE_DES
 	//
 	AicInitBlock.Capabilities = (INTERRUPT_CONTROLLER_IPI_CONTROL_MASK);
 
-	AicInitBlock.HalExtHandle = Handle;
+	AicInfo.HalExtHandle = Handle;
 
 	//
 	// Register the AIC MMIO addresses with the HAL.
 	//
-	HalRegisterPermanentAddressUsage(gAppleInterruptControllerFunctionBase, 0xC000);
+	HalRegisterPermanentAddressUsage(AicInfo.AppleInterruptControllerBasePhys, 0xC000);
 
 	//
 	// Call HalpInterruptRegisterController to register the controller.
 	// The entry should find that function pointer (right now this only works on 26100.1)
 	//
 	Status = HalpInterruptRegisterController(&AicInitBlock, 0, NULL);
-	ASSERT("AIC initialization failed!", Status == STATUS_SUCCESS);
+	ASSERTMSG("AIC initialization failed!", Status == STATUS_SUCCESS);
 }
 
 NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {

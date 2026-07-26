@@ -72,7 +72,7 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH)</AdditionalIncludeDirectories>
       <TreatWarningAsError>true</TreatWarningAsError>
       <WarningLevel>Level4</WarningLevel>
-      <AdditionalOptions>%(AdditionalOptions) /J</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /J /Oi</AdditionalOptions>
       <ExceptionHandling>
       </ExceptionHandling>
     </ClCompile>
@@ -93,7 +93,7 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH)</AdditionalIncludeDirectories>
       <TreatWarningAsError>true</TreatWarningAsError>
       <WarningLevel>Level4</WarningLevel>
-      <AdditionalOptions>%(AdditionalOptions) /J</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /J /Oi</AdditionalOptions>
       <ExceptionHandling>
       </ExceptionHandling>
     </ClCompile>
@@ -104,6 +104,10 @@
       <AdditionalDependencies>%(AdditionalDependencies);halextlib.lib;libcntpr.lib;bufferoverflowfastfailk.lib</AdditionalDependencies>
       <AdditionalOptions>%(AdditionalOptions)                           -merge:PAGECONST=PAGE                    -merge:INITCONST=INIT                    /LARGEADDRESSAWARE</AdditionalOptions>
       <ModuleDefinitionFile>HalExtAppleInterruptController.def</ModuleDefinitionFile>
+      <IgnoreSpecificDefaultLibraries>
+      </IgnoreSpecificDefaultLibraries>
+      <AdditionalLibraryDirectories>
+      </AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

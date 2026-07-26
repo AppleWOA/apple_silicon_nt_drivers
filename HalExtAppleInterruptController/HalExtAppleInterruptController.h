@@ -12,7 +12,7 @@
  *     NT kernel mode.
  *
  * License:
- *     SPDX-License-Identifier: (BSD-2-Clause-Patent OR MIT)
+ *     SPDX-License-Identifier: (BSD-2-Clause-Patent OR MIT) AND GPL-2.0
 */
 
 #ifndef HAL_EXT_APPLE_INTERRUPT_CONTROLLER_H
@@ -33,6 +33,11 @@
 #define FIELD_GET(field, val)  (((val) & (field)) / _FIELD_LSB(field))
 
 #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
+
+#define MPIDR_AFF0(mpidr)  ((mpidr) & 0xFF)
+#define MPIDR_AFF1(mpidr)  (((mpidr) >> 8) & 0xFF)
+#define MPIDR_AFF2(mpidr)  (((mpidr) >> 16) & 0xFF)
+#define MPIDR_AFF3(mpidr)  (((mpidr) >> 32) & 0xFF)
 
 //#define ALIGN(x,a)		__ALIGN_MASK((x),(typeof(x))(a)-1)
 //#define ALIGN_DOWN(x, a)	ALIGN((x) - ((a) - 1), (a))
@@ -140,6 +145,25 @@ typedef enum {
 #define AIC_V2_INFO_REG1_LAST_CPU_DIE_BITFIELD GENMASK(27, 24)
 
 //
+// MSR definitions for Fast IPIs
+//
+#define APPLE_FAST_IPI_REQUEST_LOCAL_REG_EL1 ARM64_SYSREG(3, 5, 15, 0, 0)
+#define APPLE_FAST_IPI_REQUEST_GLOBAL_REG_EL1 ARM64_SYSREG(3, 5, 15, 0, 1)
+#define APPLE_FAST_IPI_STATUS_REG_EL1 ARM64_SYSREG(3, 5, 15, 1, 1)
+#define APPLE_FAST_IPI_COUNTDOWN_REG_EL1 ARM64_SYSREG(3, 5, 15, 3, 1)
+
+//
+// Some definitions borrowed from Asahi Linux linux tree
+//
+#define IPI_RR_CPU			GENMASK(7, 0)
+#define IPI_RR_CLUSTER			GENMASK(23, 16)
+#define IPI_RR_TYPE			GENMASK(29, 28)
+#define IPI_RR_IMMEDIATE		0
+#define IPI_RR_RETRACT			1
+#define IPI_RR_DEFERRED			2
+#define IPI_RR_NOWAKE			3
+
+//
 // AIC controller general structure.
 //
 
@@ -225,7 +249,7 @@ typedef struct
 	ULONG ControllerBaseSize;
 	ULONG NumIrqs;
 	ULONG MaxIrqs;
-	ULONG ChipId; // Chip ID of the SoC we're running on - required for determining IPI support.
+	BOOLEAN FastIpisSupported; // passed in by UEFI
 } INTERRUPT_CONTROLLER_VENDOR_DATA;
 
 typedef struct
@@ -298,32 +322,32 @@ typedef enum _KNOWN_CONTROLLER_TYPE {
 //
 
 typedef struct _INTERRUPT_FUNCTION_TABLE {
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*InitializeLocalUnit)(PVOID, UINT32, UINT32, UINT32, UINT32, PUINT32); //0x0
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*InitializeLocalUnit)(PVOID, ULONG, ULONG, ULONG, ULONG, PULONG); //0x0
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*InitializeIoUnit)(PVOID); // 0x8
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*SetPriority)(PVOID, UINT32); // 0x10
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*SetPriority)(PVOID, ULONG); // 0x10
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*GetLocalUnitError)(PVOID);// 0x18
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*ClearLocalUnitError)(PVOID); //0x20
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*GetLogicalId)(PVOID, INTERRUPT_TARGET); // 0x28
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*SetLogicalId)(PVOID, INTERRUPT_TARGET); //0x30
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) INTERRUPT_RESULT(*AcceptAndGetSource)(PVOID, PINT32, PUINT32); // 0x38
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*EndOfInterrupt)(PVOID, UINT32); // 0x40
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) INTERRUPT_RESULT(*AcceptAndGetSource)(PVOID, PLONG, PULONG); // 0x38
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*EndOfInterrupt)(PVOID, ULONG); // 0x40
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*FastEndOfInterrupt)(); // 0x48
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*SetLineState)(PVOID, INTERRUPT_LINE*, INTERRUPT_LINE_STATE*); // 0x50
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*RequestInterrupt)(PVOID, INTERRUPT_LINE*, INTERRUPT_TARGET*, UINT32, INTERRUPT_LINE*); // 0x58
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*StartProcessor)(PVOID, UINT32, PVOID, UINT32); // 0x60
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*RequestInterrupt)(PVOID, INTERRUPT_LINE*, INTERRUPT_TARGET*, ULONG, INTERRUPT_LINE*); // 0x58
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*StartProcessor)(PVOID, ULONG, PVOID, ULONG); // 0x60
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*GenerateMessage)(PVOID, INTERRUPT_LINE_STATE*, PUINT64, PUINT64); //0x68
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*ConvertId)(PVOID, PUINT32, INTERRUPT_TARGET*, UINT8); // 0x70
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*ConvertId)(PVOID, PULONG, INTERRUPT_TARGET*, UINT8); // 0x70
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*SaveLocalInterrupts)(PVOID, PVOID); //0x78 (required if interrupts can be replayed)
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*ReplayLocalInterrupts)(PVOID, PVOID); //0x80 (required if interrupts can be replayed)
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*DeinitializeLocalUnit)(PVOID); //0x88
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*DeinitializeIoUnit)(PVOID); // 0x90
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) INTERRUPT_RESULT(*QueryAndGetSource)(PVOID, PINT32, PUINT32, PUINT8); // 0x98
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*DeactivateInterrupt)(PVOID, UINT32); // 0xA0
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*DirectedEndOfInterrupt)(PVOID, UINT32, UINT32); //0xA8
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*QueryLocalUnitInfo)(PVOID, UINT32, PUINT32, PUINT32, KINTERRUPT_MODE*, KINTERRUPT_MODE*); //0xB0
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) INTERRUPT_RESULT(*QueryAndGetSource)(PVOID, PLONG, PULONG, PUINT8); // 0x98
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*DeactivateInterrupt)(PVOID, ULONG); // 0xA0
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*DirectedEndOfInterrupt)(PVOID, ULONG, ULONG); //0xA8
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*QueryLocalUnitInfo)(PVOID, ULONG, PULONG, PULONG, KINTERRUPT_MODE*, KINTERRUPT_MODE*); //0xB0
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) NTSTATUS(*QueryPendingState)(PVOID, INTERRUPT_LINE*, PUINT8, PUINT8); //0xB8
 	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*CaptureGlobalCrashdumpState)(PVOID); //0xC0
-	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*CaptureProcessorCrashdumpState)(PVOID, UINT32); // 0xC8
+	_IRQL_requires_same_ _IRQL_requires_max_(HIGH_LEVEL) VOID(*CaptureProcessorCrashdumpState)(PVOID, ULONG); // 0xC8
 
 } INTERRUPT_FUNCTION_TABLE;
 

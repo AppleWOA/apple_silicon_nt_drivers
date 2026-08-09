@@ -913,10 +913,6 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(ULONG Handle, PCSRT_RESOURCE_DES
 	ASSERTMSG("AIC initialization failed!", Status == STATUS_SUCCESS);
 }
 
-NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
-
-}
-
 //
 // Description:
 //   This routine registers all of the CSRT resource descriptors in a resource group 

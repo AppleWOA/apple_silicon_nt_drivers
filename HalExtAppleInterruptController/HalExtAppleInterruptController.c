@@ -915,9 +915,6 @@ NTSTATUS AppleInterruptControllerRegisterIoUnit(ULONG Handle, PCSRT_RESOURCE_DES
 	return Status;
 }
 
-NTSTATUS HalExtAppleInterruptControllerEntry(VOID) {
-
-}
 //
 // Description:
 //   This routine registers all of the CSRT resource descriptors in a resource group 

@@ -4,3 +4,7 @@
 .vs/
 .vscode
 .vscode/
+
+# User settings and build artifacts
+*.vcxproj.user
+ARM64/
